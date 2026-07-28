@@ -91,6 +91,8 @@ restored on boot with their timers resumed from the stored deadline.
 
 ## Docs
 
+- [RAILWAY.md](RAILWAY.md) — step-by-step deploy: two services, the env vars that must
+  match, and the three Railway switches that must stay off.
 - [LAUNCH.md](LAUNCH.md) — launch checklist, deployment plan, and the bugs and decisions
   behind the current design. Worth reading before touching recovery or the OG images.
 - [ASSETS.md](ASSETS.md) — the 3D asset pipeline: Meshy prompts, rigging settings, and the
