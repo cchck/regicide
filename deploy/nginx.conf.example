@@ -1,0 +1,44 @@
+# Nginx reverse proxy for Regicide (Hong Kong single-server deployment).
+# Routes one domain to two local processes:
+#   /            -> Next.js website + API   (port 3000)
+#   /socket.io/  -> PvP WebSocket server    (port 3801)
+#
+# Copy to /etc/nginx/sites-available/regicide, symlink into sites-enabled,
+# replace your.domain, then: sudo nginx -t && sudo systemctl reload nginx
+
+# Redirect plain HTTP to HTTPS.
+server {
+    listen 80;
+    server_name your.domain;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name your.domain;
+
+    # If using a Cloudflare Origin Certificate, point these at the saved files.
+    ssl_certificate     /etc/ssl/regicide/origin.pem;
+    ssl_certificate_key /etc/ssl/regicide/origin.key;
+
+    # PvP WebSocket — the Upgrade/Connection headers are mandatory, without them
+    # Socket.IO can't switch to a WebSocket and the client shows "WEBSOCKET ERROR".
+    location /socket.io/ {
+        proxy_pass http://127.0.0.1:3801;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 3600s;   # keep idle sockets alive through long thinks
+    }
+
+    # Everything else -> Next.js
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

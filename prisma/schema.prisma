@@ -1,0 +1,104 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  chips        Int      @default(200)
+  // The stake currently on an AI table (deducted at match/start, null when settled).
+  // Its purpose is the settlement clamp: E-card is zero-sum with both sides seated at
+  // the same stack, so no honest match can ever pay out more than 2× this figure —
+  // which turns "client reports any number it likes" into a bounded, closable claim.
+  activeStake  Int?
+  // The buy-in on a live PvP table (set at seating, cleared at settlement). Primary
+  // recovery is resume-from-DB (see PvpRoom); pvpStake is the safety net — on boot, any
+  // stake whose room could NOT be restored is refunded, so no buy-in ever vanishes.
+  pvpStake     Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cardPlayStats  CardPlayStat[]
+  cardPlayEvents CardPlayEvent[]
+}
+
+enum Role {
+  EMPEROR
+  SLAVE
+}
+
+enum CardKind {
+  EMPEROR
+  CITIZEN
+  SLAVE
+}
+
+// Raw per-round play log — source of truth. One row per round the user played.
+// Keeps full context (round, stakes, outcome) so future analysis can slice any way.
+model CardPlayEvent {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role          Role // which side the user was on
+  card          CardKind // what they played
+  round         Int // 1..5 within the set — the key tell in E-Card
+  betMultiplier Int // pot multiplier when the round resolved
+  won           Boolean
+  folded        Boolean // round ended in a fold (no showdown — play stays private)
+  foldedSelf    Boolean // the user was the one who folded
+  createdAt     DateTime @default(now())
+
+  @@index([userId, role])
+}
+
+// Aggregate cache of PUBLIC tendencies — only showdown (non-folded) plays are counted,
+// because that's all a future PvP opponent is entitled to see.
+// Probability = count / sum(counts for that user+role+round).
+model CardPlayStat {
+  id       String   @id @default(cuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     Role
+  cardKind CardKind
+  round    Int // 1..5
+  count    Int      @default(0)
+
+  @@unique([userId, role, cardKind, round])
+}
+
+// A live PvP room, mirrored out of the ws server's in-memory Map so a process restart
+// (deploy / crash / machine migration) doesn't lose matches. Written on every state
+// change, read back on boot to rebuild the rooms and re-arm timers from `deadline`.
+// Deleted when the room is torn down. `version` guards against a GameState shape change
+// between deploys: a row whose version differs from the running server is unrestorable,
+// and only THAT room falls back to refund — never the others.
+model PvpRoom {
+  code      String   @id
+  version   Int
+  data      Json // { tierKey, buyIn, host, guest, state, deadline, endInfo, insights, finished }
+  updatedAt DateTime @updatedAt
+}
+
+// A message waiting for a player who wasn't connected when something happened to their
+// match — chiefly "your match was voided by a restart and the buy-in refunded". Delivered
+// on their next ws connect, then deleted. Without this the player just finds their room
+// gone and reads it as a bug.
+model PvpNotice {
+  id        String   @id @default(cuid())
+  userId    String   @unique // one pending notice per player; a newer one supersedes
+  kind      String // 'voided'
+  refund    Int      @default(0)
+  createdAt DateTime @default(now())
+}
