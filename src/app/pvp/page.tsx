@@ -8,8 +8,10 @@ import { connectPvp } from '@/lib/pvp-client';
 import { PvpView, PvpAction } from '@/lib/pvp-types';
 import { CardType, BetAction } from '@/lib/types';
 import { audio } from '@/lib/audio';
-import TableScene, { Quality, DealerAction, FinaleKind, FINALE_TIMINGS } from '@/components/TableScene';
+import TableScene, { DealerAction, FinaleKind, FINALE_TIMINGS } from '@/components/TableScene';
 import MatchReport, { useFinaleStage } from '@/components/MatchReport';
+import { useQuality } from '@/lib/device';
+import RotatePrompt from '@/components/RotatePrompt';
 import EmoteDock, { Emote, EMOTE_ACTION } from '@/components/EmoteDock';
 import { BetPicker, BetActions, StatusStrip, VerdictBar } from '@/components/GameBoard';
 import TierCard, { STAKES_TIERS, StakesTier } from '@/components/TierCard';
@@ -60,9 +62,10 @@ export default function PvpPage() {
   const [joinCode, setJoinCode] = useState('');
   const [roomCode, setRoomCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<PvpView | null>(null);
-  const [quality, setQuality] = useState<Quality>('high');
+  const [quality] = useQuality();
   // The opponent's emote takes over their figure for a beat, then hands it back.
   const [oppEmote, setOppEmote] = useState<DealerAction | null>(null);
   const emoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -72,6 +75,10 @@ export default function PvpPage() {
   // The room code we're currently waiting in, readable from the socket's 'connect' handler
   // (which is registered once and would otherwise close over a stale roomCode).
   const waitingCodeRef = useRef<string | null>(null);
+  // A room code carried in by a share link (/pvp?room=XXXXXX). Joined automatically once
+  // the socket is up; consumed once so a later disconnect doesn't re-trigger it.
+  const inviteRef = useRef<string | null>(null);
+  const [invite, setInvite] = useState<string | null>(null);
 
   // Local per-round selection (mirrors GameBoard's tentative pick).
   const [selectedCard, setSelectedCard] = useState<CardType | null>(null);
@@ -90,9 +97,15 @@ export default function PvpPage() {
     : null;
   const finaleStage = useFinaleStage(pvpFinale);
 
+
+  // Pick up an invite code from the share link, then strip it from the address bar so a
+  // refresh (or a back-navigation after the match) doesn't try to re-join a dead room.
   useEffect(() => {
-    const saved = localStorage.getItem('regicide-quality');
-    if (saved === 'high' || saved === 'medium' || saved === 'low') setQuality(saved);
+    const code = new URLSearchParams(window.location.search).get('room')?.toUpperCase().trim();
+    if (!code || code.length !== 6) return;
+    inviteRef.current = code;
+    setInvite(code);
+    window.history.replaceState(null, '', '/pvp');
   }, []);
 
   // Connect once authenticated.
@@ -112,11 +125,26 @@ export default function PvpPage() {
         socketRef.current = socket;
         socket.on('connect', () => {
           setConnected(true);
+
+          // Arrived via a share link — take the seat straight away. Consumed once, so a
+          // later reconnect doesn't try to re-join a room we've already left.
+          const code = inviteRef.current;
+          if (code) {
+            inviteRef.current = null;
+            socket.emit('join-room', { code }, (res: { ok?: boolean; error?: string }) => {
+              // Either way the invite is spent — clearing it stops "正在落座…" lingering
+              // in the lobby if the player comes back here after the match.
+              setInvite(null);
+              if (res?.error) setError(res.error);
+            });
+            return;
+          }
+
           // A waiting room isn't persisted (it holds no stake), so a server restart erases
           // it. Re-verify on every (re)connect or the host waits forever at a dead code.
-          const code = waitingCodeRef.current;
-          if (!code) return;
-          socket.emit('room-alive', { code }, (res: { alive?: boolean }) => {
+          const waiting = waitingCodeRef.current;
+          if (!waiting) return;
+          socket.emit('room-alive', { code: waiting }, (res: { alive?: boolean }) => {
             if (res?.alive) return;
             setStage('lobby');
             setRoomCode(null);
@@ -232,22 +260,34 @@ export default function PvpPage() {
     });
   }, []);
 
-  const copyCode = useCallback(async () => {
-    if (!roomCode) return;
+  // clipboard.writeText needs a secure context; fall back to the old textarea trick so
+  // copying still works over plain http (a LAN IP during testing, say).
+  const writeClipboard = useCallback(async (text: string) => {
     try {
-      await navigator.clipboard.writeText(roomCode);
+      await navigator.clipboard.writeText(text);
     } catch {
-      // Non-secure context fallback
       const ta = document.createElement('textarea');
-      ta.value = roomCode;
+      ta.value = text;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
       ta.remove();
     }
+  }, []);
+
+  const copyCode = useCallback(async () => {
+    if (!roomCode) return;
+    await writeClipboard(roomCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [roomCode]);
+  }, [roomCode, writeClipboard]);
+
+  const copyLink = useCallback(async () => {
+    if (!roomCode) return;
+    await writeClipboard(`${window.location.origin}/pvp?room=${roomCode}`);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  }, [roomCode, writeClipboard]);
 
   const sendEmote = useCallback((e: Emote) => {
     socketRef.current?.emit('emote', e);
@@ -267,12 +307,25 @@ export default function PvpPage() {
   }
 
   if (status === 'unauthenticated') {
+    // An invited guest lands here first. Carry the room code through the login round-trip
+    // so they come back to the table instead of a blank lobby wondering where it went.
+    const back = invite ? `/pvp?room=${invite}` : '/pvp';
     return (
       <main className="h-screen bg-void flex flex-col items-center justify-center gap-8 px-4">
         <BackButton onClick={() => router.push('/')} />
         <p className="font-gothic text-cracked text-3xl tracking-[8px] text-blood">真 人 对 战</p>
-        <p className="text-text-secondary tracking-[3px] font-display">对赌要有名字 — 请先登录</p>
-        <DecoButton color="blood" size="md" onClick={() => router.push('/login')}>登 录 / 注 册</DecoButton>
+        {invite ? (
+          <div className="text-center">
+            <p className="text-text-bright tracking-[3px] font-display">有人邀你入局</p>
+            <p className="text-amber-bright tracking-[8px] font-display font-bold text-2xl mt-3">{invite}</p>
+            <p className="text-text-muted text-xs tracking-[2px] font-display mt-3">登录后自动落座</p>
+          </div>
+        ) : (
+          <p className="text-text-secondary tracking-[3px] font-display">对赌要有名字 — 请先登录</p>
+        )}
+        <DecoButton color="blood" size="md" onClick={() => router.push(`/login?next=${encodeURIComponent(back)}`)}>
+          登 录 / 注 册
+        </DecoButton>
       </main>
     );
   }
@@ -329,6 +382,7 @@ export default function PvpPage() {
 
     return (
       <main className="h-screen bg-void">
+        <RotatePrompt />
         <div className="h-full flex flex-col relative">
           {!pvpFinale && (
             <VerdictBar
@@ -585,9 +639,16 @@ export default function PvpPage() {
             ))}
           </button>
 
-          <DecoButton color="amber" size="md" onClick={copyCode} className="min-w-[220px]">
-            {copied ? '已 复 制 ✓' : '复 制 暗 号'}
-          </DecoButton>
+          {/* Two ways to invite: the code (typed in by hand) or the link (one tap for the
+              guest — it lands them straight in the seat, through login if they need it). */}
+          <div className="flex flex-col sm:flex-row items-center gap-3">
+            <DecoButton color="amber" size="md" onClick={copyCode} className="min-w-[190px]">
+              {copied ? '已 复 制 ✓' : '复 制 暗 号'}
+            </DecoButton>
+            <DecoButton color="blood" size="md" onClick={copyLink} className="min-w-[190px]">
+              {linkCopied ? '链 接 已 复 制 ✓' : '复 制 邀 请 链 接'}
+            </DecoButton>
+          </div>
 
           <div className="flex items-center gap-3 text-text-muted">
             <div className="flex gap-1.5">
@@ -630,6 +691,9 @@ export default function PvpPage() {
           </p>
         )}
         {!connected && !error && <p className="text-xs tracking-[2px] text-text-dim font-display mt-2">连接对战服务器中…</p>}
+        {invite && connected && !error && (
+          <p className="text-xs tracking-[3px] text-amber font-display mt-2">正在落座 {invite} …</p>
+        )}
       </div>
 
       {/* A match that ended while we were away — say so, or the player reads it as a bug */}

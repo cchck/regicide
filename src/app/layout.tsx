@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Cinzel, Noto_Serif_SC, Long_Cang, UnifrakturMaguntia } from "next/font/google";
 import Providers from "@/components/Providers";
 import AccountBar from "@/components/AccountBar";
@@ -29,6 +29,17 @@ const unifraktur = UnifrakturMaguntia({
   weight: "400",
   variable: "--font-unifraktur",
 });
+
+// Without this a phone lays the page out at ~980px and scales it down, making everything
+// unreadably small. Zoom is locked because this is a full-screen canvas game — pinch and
+// double-tap zoom only ever fire by accident here.
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  themeColor: '#05050a',
+};
 
 export const metadata: Metadata = {
   title: "REGICIDE — 弑君",

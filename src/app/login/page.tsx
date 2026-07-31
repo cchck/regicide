@@ -6,6 +6,16 @@ import { useRouter } from 'next/navigation';
 import DecoButton from '@/components/DecoButton';
 import Flourish from '@/components/Flourish';
 
+// Where to land after signing in. Read from the URL rather than useSearchParams so the
+// page needs no Suspense boundary. Only same-site paths are honoured — an absolute URL
+// here would be an open redirect (a share link could bounce someone off to any site).
+function nextPath(): string {
+  if (typeof window === 'undefined') return '/';
+  const raw = new URLSearchParams(window.location.search).get('next');
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/';
+  return raw;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
@@ -47,7 +57,7 @@ export default function LoginPage() {
         if (isSignup) setMode('signin');
         return;
       }
-      router.push('/');
+      router.push(nextPath());
       router.refresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : '未知错误';

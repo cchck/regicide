@@ -14,6 +14,8 @@ import { audio } from '@/lib/audio';
 import CardArt from './CardArt';
 import TableScene, { Quality, DealerAction, FinaleKind, FINALE_TIMINGS, ViewMode } from './TableScene';
 import MatchReport, { useFinaleStage } from './MatchReport';
+import { useQuality } from '@/lib/device';
+import RotatePrompt from './RotatePrompt';
 import DecoButton from './DecoButton';
 import Flourish from './Flourish';
 import TierCard, { STAKES_TIERS, StakesTier } from './TierCard';
@@ -292,16 +294,9 @@ export default function GameBoard() {
   const [selectedFanIndex, setSelectedFanIndex] = useState<number | null>(null);
   const [matchBuyIn, setMatchBuyIn] = useState(STARTING_CHIPS);
 
-  // Graphics quality — persisted so a laptop that runs hot stays on its chosen tier.
-  const [quality, setQuality] = useState<Quality>('high');
-  useEffect(() => {
-    const saved = localStorage.getItem('regicide-quality');
-    if (saved === 'high' || saved === 'medium' || saved === 'low') setQuality(saved);
-  }, []);
-  const changeQuality = useCallback((q: Quality) => {
-    setQuality(q);
-    localStorage.setItem('regicide-quality', q);
-  }, []);
+  // Graphics quality — persisted so a laptop that runs hot stays on its chosen tier, and
+  // defaulted down on phones (see useQuality).
+  const [quality, changeQuality] = useQuality();
 
   // ————— Finale: match-end plays out in-scene before any UI switches —————
   // Which ending this is. Order matters: bankruptcy can co-occur with 4 set-wins
@@ -950,6 +945,8 @@ export default function GameBoard() {
 
   return (
     <div className={screenShake ? 'h-full flex flex-col relative shake' : 'h-full flex flex-col relative'}>
+      {/* Menus reflow fine upright; the table doesn't — ask for landscape only in a match */}
+      <RotatePrompt />
       {/* Chip totals live on the table now — real stacks beside each player, no side gauges */}
       <ScreenFlash type={flashType} />
       <SideSwitchOverlay side={state.playerSide} show={showSideSwitch} />

@@ -9,6 +9,7 @@ import { createPortal } from '@react-three/fiber';
 import { SkeletonUtils } from 'three-stdlib';
 import * as THREE from 'three';
 import { CardType } from '@/lib/types';
+import { useIsTouch } from '@/lib/device';
 import { audio } from '@/lib/audio';
 import PlayedCard, { CardMesh } from './Card3D';
 import ChipEconomy from './Chips3D';
@@ -356,10 +357,14 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
 }) {
   const group = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
+  const touch = useIsTouch();
   // If the card unmounts mid-hover (it just got played), don't leave a stuck pointer cursor.
   useEffect(() => () => { document.body.style.cursor = 'auto'; }, []);
 
   const off = index - (count - 1) / 2;
+  // A finger needs more room than a cursor: spread the fan wider on touch so neighbouring
+  // cards don't share a tap target.
+  const spread = touch ? 0.15 : 0.105;
 
   useFrame((state, delta) => {
     if (!group.current) return;
@@ -367,7 +372,7 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
     // Tutorial hint: the guided card breathes upward until the player takes it.
     const hintLift = hinted && !selected ? 0.04 + Math.sin(state.clock.getElapsedTime() * 3) * 0.018 : 0;
     const lift = (selected ? 0.075 : hovered && canSelect ? 0.045 : 0) + hintLift;
-    const tx = off * 0.105;
+    const tx = off * spread;
     const ty = -0.35 + lift - Math.abs(off) * 0.011;
     const tz = -0.78 + index * 0.007 + (selected ? 0.04 : 0);
     group.current.position.x += (tx - group.current.position.x) * k;
@@ -380,7 +385,7 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
   return (
     <group
       ref={group}
-      position={[off * 0.105, -0.55, -0.78]}
+      position={[off * spread, -0.55, -0.78]}
       rotation={[-0.18, 0, 0]}
       scale={0.23}
       onClick={canSelect ? (e) => { e.stopPropagation(); onSelect(card, index); } : undefined}
@@ -388,6 +393,14 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
       onPointerOut={canSelect ? () => { setHovered(false); document.body.style.cursor = 'auto'; } : undefined}
     >
       <CardMesh type={card} castShadow={false} />
+      {/* Invisible touch pad — a fingertip is far coarser than the card's own silhouette,
+          and misses here read as "the game ignored me". Only on touch, so it can never
+          steal a mouse hover from a neighbouring card. */}
+      {touch && canSelect && (
+        <mesh position={[0, 0, 0.02]} visible={false}>
+          <planeGeometry args={[1.35, 1.9]} />
+        </mesh>
+      )}
     </group>
   );
 }
