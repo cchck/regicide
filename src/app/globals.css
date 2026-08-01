@@ -135,6 +135,14 @@ html, body {
   animation: fade-in-up 0.5s cubic-bezier(0.23, 1, 0.32, 1) forwards;
 }
 
+/* Horizontal rails (shop slots, item cards) scroll by drag/swipe — a visible scrollbar
+   would cut across the artwork underneath them. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
 /* Chip delta rising off the HUD total — a hit-number that floats up and fades. */
 @keyframes chip-float {
   0% { opacity: 0; transform: translate(-50%, 4px) scale(0.85); }

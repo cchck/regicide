@@ -53,6 +53,8 @@ export default function AccountBar() {
 
   // Don't show the bar on the login page — the whole page IS the auth flow
   if (pathname === '/login') return null;
+  // The shop has its own, richer wallet — two of them collide in the same corner.
+  if (pathname === '/shop') return null;
   // Or during an in-progress match — the verdict beam runs edge-to-edge up there
   if (inMatch) return null;
 
