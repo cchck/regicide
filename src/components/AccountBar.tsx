@@ -16,6 +16,7 @@ export default function AccountBar() {
   const router = useRouter();
   const pathname = usePathname();
   const [chips, setChips] = useState<number | null>(null);
+  const [seals, setSeals] = useState<number | null>(null);
   const [inMatch, setInMatch] = useState(false);
 
   useEffect(() => {
@@ -29,6 +30,7 @@ export default function AccountBar() {
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && typeof data.chips === 'number') setChips(data.chips);
+        if (data && typeof data.seals === 'number') setSeals(data.seals);
       })
       .catch(() => {});
   }, []);
@@ -36,6 +38,7 @@ export default function AccountBar() {
   useEffect(() => {
     if (!session?.user) {
       setChips(null);
+      setSeals(null);
       return;
     }
     refresh();
@@ -71,6 +74,18 @@ export default function AccountBar() {
             >
               <span className="w-2 h-2 rotate-45" style={{ background: '#c49a30', boxShadow: '0 0 6px rgba(196,154,48,0.8)' }} />
               <span className="text-amber-bright font-display font-black text-sm sm:text-base leading-none">{chips}</span>
+            </span>
+          )}
+          {/* Seals — the cosmetic purse. Only shown once they have any, so a new player
+              isn't greeted by a currency they've never heard of sitting at zero. */}
+          {!!seals && (
+            <span
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-amber/30 bg-black/50 backdrop-blur-sm"
+              style={{ clipPath: 'polygon(6px 0,calc(100% - 6px) 0,100% 6px,100% calc(100% - 6px),calc(100% - 6px) 100%,6px 100%,0 calc(100% - 6px),0 6px)' }}
+              title="金印 — 只用于当铺"
+            >
+              <span className="text-amber text-xs leading-none">◈</span>
+              <span className="text-amber font-display font-bold text-sm leading-none">{seals}</span>
             </span>
           )}
           <span className="text-xs sm:text-sm text-text-secondary tracking-[3px] font-display">

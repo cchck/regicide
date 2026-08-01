@@ -10,7 +10,7 @@ export async function GET() {
   }
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { chips: true, displayName: true },
+    select: { chips: true, seals: true, displayName: true },
   });
   if (!user) return NextResponse.json({ error: '账号不存在' }, { status: 404 });
   return NextResponse.json(user);

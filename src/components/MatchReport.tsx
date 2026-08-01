@@ -108,7 +108,7 @@ function Stat({ label, value, accent, delay }: { label: string; value: string; a
 }
 
 export default function MatchReport({
-  kind, sets, chipDelta, finalChips, regicides, folds, durationSec, oppName, settled, onExit,
+  kind, sets, chipDelta, finalChips, regicides, folds, durationSec, oppName, settled, sealsEarned, onExit,
 }: {
   kind: FinaleKind;
   /** [yours, theirs] */
@@ -121,6 +121,8 @@ export default function MatchReport({
   durationSec?: number | null;
   oppName?: string;
   settled: boolean;
+  /** Seals earned this match, shown as the payout line. Null until settlement lands. */
+  sealsEarned?: number | null;
   onExit: () => void;
 }) {
   const t = THEME[kind];
@@ -191,6 +193,12 @@ export default function MatchReport({
               <Stat key={s.label} label={s.label} value={s.value} accent={s.accent} delay={600 + i * 110} />
             ))}
           </div>
+
+          {!!sealsEarned && (
+            <p className="text-sm tracking-[3px] font-display mt-7 fade-in-up" style={{ animationDelay: '1100ms', color: '#d8a838' }}>
+              ◈ 金印 <span className="font-bold text-lg">+{sealsEarned}</span>
+            </p>
+          )}
 
           {settled && (
             <p className="text-[11px] tracking-[3px] text-text-muted font-display mt-8 fade-in-up" style={{ animationDelay: '1200ms' }}>

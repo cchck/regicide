@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { prisma } from '@/lib/db';
+import { SEALS_PER_WIN, SEALS_PER_REGICIDE, MAX_REGICIDES_PER_MATCH } from '@/lib/shop';
 
 // Settle a finished match: whatever the player walked away from the table with goes
 // back into the persistent bankroll.
@@ -23,6 +24,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '无效的结算额' }, { status: 400 });
   }
 
+  // Seal payout. Both inputs are client-reported, so both are bounded: the win bonus is
+  // only paid when the (already clamped) settlement shows a profit, and the regicide count
+  // can't exceed what a Bo7 could physically contain.
+  const claimedRegicides = Number(body?.regicides);
+  const regicides = Number.isFinite(claimedRegicides)
+    ? Math.min(Math.max(Math.floor(claimedRegicides), 0), MAX_REGICIDES_PER_MATCH)
+    : 0;
+
   const result = await prisma.$transaction(async (tx) => {
     const user = await tx.user.findUnique({
       where: { id: session.user.id },
@@ -32,12 +41,15 @@ export async function POST(req: Request) {
     if (user.activeStake === null) return { error: '没有进行中的对局', status: 409 } as const;
 
     const settled = Math.min(Math.floor(finalChips), user.activeStake * 2);
+    const won = settled > user.activeStake;
+    const seals = (won ? SEALS_PER_WIN : 0) + regicides * SEALS_PER_REGICIDE;
+
     const updated = await tx.user.update({
       where: { id: session.user.id },
-      data: { chips: { increment: settled }, activeStake: null },
-      select: { chips: true },
+      data: { chips: { increment: settled }, activeStake: null, seals: { increment: seals } },
+      select: { chips: true, seals: true },
     });
-    return { balance: updated.chips } as const;
+    return { balance: updated.chips, seals: updated.seals, sealsEarned: seals } as const;
   });
 
   if ('error' in result) {

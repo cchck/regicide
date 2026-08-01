@@ -442,6 +442,9 @@ export default function GameBoard() {
   const [starting, setStarting] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
   const settledRef = useRef(false);
+  // Seals paid out for this match, filled in when settlement returns so the report can
+  // show what the win was actually worth.
+  const [sealsEarned, setSealsEarned] = useState<number | null>(null);
 
   // Account balance — mirrored locally for the setup screen, broadcast to the corner bar.
   const [balance, setBalance] = useState<number | null>(null);
@@ -615,14 +618,24 @@ export default function GameBoard() {
   useEffect(() => {
     if (state.phase === 'match-end' && loggedIn && !settledRef.current) {
       settledRef.current = true;
+      // Regicides across the whole match, for the seal payout. resolveSet moves a set's
+      // rounds into setHistory, but a bankruptcy ending skips it — so the current set can
+      // still be sitting in roundHistory alone (same array reference when both exist).
+      const rounds = state.setHistory.some((s) => s.rounds === state.roundHistory)
+        ? state.setHistory.flatMap((s) => s.rounds)
+        : [...state.setHistory.flatMap((s) => s.rounds), ...state.roundHistory];
+      const regicides = rounds.filter(
+        (r) => !r.folded && r.playerCard === 'slave' && r.opponentCard === 'emperor',
+      ).length;
       fetch('/api/match/end', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ finalChips: state.playerChips }),
+        body: JSON.stringify({ finalChips: state.playerChips, regicides }),
       })
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (data && typeof data.balance === 'number') updateBalance(data.balance);
+          if (data && typeof data.sealsEarned === 'number') setSealsEarned(data.sealsEarned);
         })
         .catch(() => {
           // Settlement failure is money-losing — flag it instead of swallowing silently.
@@ -1202,6 +1215,7 @@ export default function GameBoard() {
           folds={myFolds}
           durationSec={matchStartRef.current ? (Date.now() - matchStartRef.current) / 1000 : null}
           settled={loggedIn}
+          sealsEarned={sealsEarned}
           onExit={() => { setMenuView('hub'); dispatch({ type: 'BACK_TO_MENU' }); }}
         />
       )}
