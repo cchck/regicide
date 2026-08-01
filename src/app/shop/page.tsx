@@ -147,8 +147,8 @@ export default function ShopPage() {
       </div>
 
       {/* ——— Slots: a rail down the left on desktop ——— */}
-      <div className="hidden sm:flex absolute left-4 top-24 bottom-44 z-20 w-28 flex-col gap-1">
-        <p className="text-[9px] tracking-[3px] text-text-dim font-display mb-1 pl-2.5">换 什 么</p>
+      <div className="hidden sm:flex absolute left-5 top-24 bottom-52 z-20 w-40 flex-col gap-2">
+        <p className="text-[10px] tracking-[4px] text-text-dim font-display mb-2 pl-3">换 什 么</p>
         {SLOTS.map((s) => {
           const active = slot === s.key;
           return (
@@ -157,7 +157,7 @@ export default function ShopPage() {
               type="button"
               onClick={() => { audio.sfx('click'); setSlot(s.key); }}
               className={
-                'text-left px-2.5 py-2.5 text-[13px] tracking-[2px] font-display transition-all border-l-2 ' +
+                'text-left px-3 py-3.5 text-[17px] tracking-[3px] font-display transition-all border-l-2 ' +
                 (active
                   ? 'border-amber text-amber-bright'
                   : 'border-transparent text-text-muted hover:text-text-secondary hover:border-border')
@@ -193,8 +193,10 @@ export default function ShopPage() {
 
       {/* ——— Items along the bottom ——— */}
       <div className="absolute bottom-0 inset-x-0 z-20"
-        style={{ background: 'linear-gradient(to top, rgba(4,4,9,0.96) 55%, rgba(4,4,9,0.7) 82%, transparent)' }}>
-        <div className="px-4 sm:px-6 pt-5 pb-4 flex flex-col gap-3">
+        style={{ background: 'linear-gradient(to top, rgba(3,3,7,0.99) 62%, rgba(3,3,7,0.93) 86%, rgba(3,3,7,0.55) 100%)' }}>
+        {/* A hairline that gives the tray an actual edge instead of dissolving into the room */}
+        <div className="h-px" style={{ background: 'linear-gradient(to right, transparent, rgba(196,154,48,0.45) 20%, rgba(196,154,48,0.45) 80%, transparent)' }} />
+        <div className="px-4 sm:px-8 pt-6 pb-5 flex flex-col gap-4">
 
           {/* Cards */}
           <div className="overflow-x-auto no-scrollbar pt-2.5 pb-1">
@@ -212,7 +214,7 @@ export default function ShopPage() {
                     onClick={() => tryOn(item)}
                     disabled={!item.ready}
                     className={
-                      'relative shrink-0 w-[136px] sm:w-[148px] px-3 pt-4 pb-3 border text-left transition-all duration-200 ' +
+                      'relative shrink-0 w-[172px] sm:w-[188px] px-4 pt-5 pb-4 border text-left transition-all duration-200 ' +
                       (!item.ready ? 'opacity-40 cursor-not-allowed ' : 'hover:-translate-y-1 ') +
                       (isFocus && item.ready ? '-translate-y-2' : '')
                     }
@@ -227,33 +229,33 @@ export default function ShopPage() {
                       style={{ background: r.color, boxShadow: isFocus ? `0 0 10px ${r.color}` : 'none' }} />
 
                     {/* The name IS the art — gothic, rarity-coloured */}
-                    <div className="h-[58px] flex items-center justify-center">
+                    <div className="h-[74px] flex items-center justify-center">
                       <span
                         className="font-gothic text-center leading-tight"
                         style={{
                           color: r.color,
-                          fontSize: item.name.length > 4 ? '19px' : '24px',
-                          textShadow: `0 0 18px ${r.color}55`,
+                          fontSize: item.name.length > 4 ? '25px' : '32px',
+                          textShadow: `0 0 22px ${r.color}66`,
                         }}
                       >
                         {item.name}
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between mt-2.5">
-                      <span className="text-[9px] tracking-[1px] font-display px-1.5 py-0.5 border"
+                    <div className="flex items-center justify-between mt-3.5">
+                      <span className="text-[11px] tracking-[1px] font-display px-2 py-0.5 border"
                         style={{ color: r.color, borderColor: r.color + '55' }}>
                         {r.name}
                       </span>
                       {isEquipped ? (
-                        <span className="text-[9px] tracking-[1px] text-teal-bright font-display">使用中</span>
+                        <span className="text-[11px] tracking-[1px] text-teal-bright font-display">使用中</span>
                       ) : !item.ready ? (
-                        <span className="text-[9px] tracking-[1px] text-text-dim font-display">待上架</span>
+                        <span className="text-[11px] tracking-[1px] text-text-dim font-display">待上架</span>
                       ) : isOwned ? (
-                        <span className="text-[9px] tracking-[1px] text-text-muted font-display">已拥有</span>
+                        <span className="text-[11px] tracking-[1px] text-text-muted font-display">已拥有</span>
                       ) : (
-                        <span className="flex items-center gap-1 text-amber-bright font-display font-bold text-[11px]">
-                          <span className="text-[9px]">◈</span>{item.price}
+                        <span className="flex items-center gap-1 text-amber-bright font-display font-bold text-[14px]">
+                          <span className="text-[11px]">◈</span>{item.price}
                         </span>
                       )}
                     </div>
@@ -265,20 +267,20 @@ export default function ShopPage() {
 
           {/* Detail + actions — one set, tied to whatever is focused */}
           <div className="flex items-center justify-between gap-4 min-h-[38px] border-t border-border-subtle/50 pt-3">
-            <p className="text-[11px] sm:text-xs leading-relaxed text-text-muted font-display flex-1 min-w-0">
+            <p className="text-[13px] sm:text-[15px] leading-relaxed text-text-secondary font-display flex-1 min-w-0 tracking-[1px]">
               {error ? <span className="text-blood-glow">{error}</span> : focus?.blurb ?? ''}
             </p>
             <div className="flex gap-2 shrink-0">
               {dirty && (
-                <DecoButton color="neutral" size="sm" onClick={() => setPreview(equipped)}>还 原</DecoButton>
+                <DecoButton color="neutral" size="md" onClick={() => setPreview(equipped)}>还 原</DecoButton>
               )}
               {focus && focus.ready && !focusOwned && (
-                <DecoButton color="amber" size="sm" disabled={busy || seals < focus.price} onClick={() => buy(focus)}>
+                <DecoButton color="amber" size="md" disabled={busy || seals < focus.price} onClick={() => buy(focus)}>
                   买 下 ◈{focus.price}
                 </DecoButton>
               )}
               {focus && focus.ready && focusOwned && !focusEquipped && (
-                <DecoButton color="amber" size="sm" disabled={busy} onClick={() => equip(focus)}>换 上</DecoButton>
+                <DecoButton color="amber" size="md" disabled={busy} onClick={() => equip(focus)}>换 上</DecoButton>
               )}
             </div>
           </div>
