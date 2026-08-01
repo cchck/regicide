@@ -15,6 +15,7 @@ import CardArt from './CardArt';
 import TableScene, { Quality, DealerAction, FinaleKind, FINALE_TIMINGS, ViewMode } from './TableScene';
 import MatchReport, { useFinaleStage } from './MatchReport';
 import { useQuality } from '@/lib/device';
+import { useLoadout } from '@/lib/useLoadout';
 import RotatePrompt from './RotatePrompt';
 import DecoButton from './DecoButton';
 import Flourish from './Flourish';
@@ -436,6 +437,8 @@ export default function GameBoard() {
   // and settle back to it when the match ends. Guests play with local chips only.
   const { data: session } = useSession();
   const loggedIn = !!session?.user;
+  // The room the player has earned/bought. Guests keep the free defaults.
+  const look = useLoadout(loggedIn);
   const [starting, setStarting] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
   const settledRef = useRef(false);
@@ -774,6 +777,7 @@ export default function GameBoard() {
           opponentChips={0}
           pot={0}
           quality={quality}
+          look={look}
         />
       </div>
     );
@@ -809,6 +813,7 @@ export default function GameBoard() {
             else if (key === 'ai') sitDown(() => setMenuView('setup'));
             else if (key === 'pvp') router.push('/pvp');
             else if (key === 'dossier') router.push('/dossier');
+            else if (key === 'shop') router.push('/shop');
             else router.push('/ledger');
           }}
         />
@@ -1029,6 +1034,7 @@ export default function GameBoard() {
             playerSetsWon={state.playerSetsWon}
             opponentSetsWon={state.opponentSetsWon}
             finale={finaleKind}
+            look={look}
           />
 
           {/* Focus vignette — pulls attention back to the opponent + table, away
@@ -1205,7 +1211,7 @@ export default function GameBoard() {
 
 // ————————————————————————————— Menu screens —————————————————————————————
 
-type HubEntryKey = 'tutorial' | 'ai' | 'pvp' | 'dossier' | 'ledger';
+type HubEntryKey = 'tutorial' | 'ai' | 'pvp' | 'dossier' | 'ledger' | 'shop';
 
 const HUB_INK = {
   teal: { text: '#3fb3b3', rgb: '63,179,179' },
@@ -1228,6 +1234,7 @@ function HubScreen({ tutorialDone, sitting, onEnter }: {
     { key: 'pvp', glyph: '决', title: '真人对战', sub: '房间码 · 全额买入', ink: 'blood' },
     { key: 'dossier', glyph: '档', title: '密 档', sub: '你的出牌倾向', ink: 'amber' },
     { key: 'ledger', glyph: '榜', title: '血 榜', sub: '谁主宰这座大厅', ink: 'amber' },
+    { key: 'shop', glyph: '铺', title: '当 铺', sub: '给这间房换个排面', ink: 'amber' },
   ];
 
   return (

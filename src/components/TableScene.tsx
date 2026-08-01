@@ -10,6 +10,7 @@ import { SkeletonUtils } from 'three-stdlib';
 import * as THREE from 'three';
 import { CardType } from '@/lib/types';
 import { useIsTouch } from '@/lib/device';
+import { normalizeLoadout, type Loadout } from '@/lib/shop';
 import { audio } from '@/lib/audio';
 import PlayedCard, { CardMesh } from './Card3D';
 import ChipEconomy from './Chips3D';
@@ -534,6 +535,98 @@ function useProp(url: string, tune: (m: THREE.MeshStandardMaterial) => void) {
     });
     return root;
   }, [scene, tune]);
+}
+
+// ————————————————————————— The shabby defaults —————————————————————————
+// What a new player starts with. Built from primitives on purpose: crude geometry reads
+// as cheap, which is exactly right for a basement game, and it means the shop has a real
+// before/after on day one without waiting on any asset pipeline.
+
+// One bulb on a cord — the whole iconography of an underground card game.
+function BareBulb() {
+  const bulb = useRef<THREE.Mesh>(null);
+  const light = useRef<THREE.PointLight>(null);
+  const finale = useContext(FinaleContext);
+  const y = CHANDELIER_BOTTOM + 0.2;
+  const cordLen = CEILING_Y - y;
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    const f = finale.current;
+    // Mains hum: a slight, irregular flicker. Dies with the room in the dark endings.
+    let mul = 0.92 + Math.sin(t * 9.3) * 0.04 + Math.sin(t * 23.7) * 0.03;
+    if (f.kind === 'execution') mul *= 1 - Math.min(Math.max((finaleElapsed(f, t) - 0.3) / 1.0, 0), 1);
+    else if (f.kind === 'broke') mul = finaleElapsed(f, t) > 1.6 ? 0 : mul;
+    if (light.current) light.current.intensity = 2.6 * mul;
+    const m = bulb.current?.material as THREE.MeshStandardMaterial | undefined;
+    if (m) m.emissiveIntensity = 2.8 * mul;
+  });
+  return (
+    <group position={[0, y, -0.9]}>
+      <mesh position={[0, cordLen / 2, 0]}>
+        <cylinderGeometry args={[0.008, 0.008, cordLen, 6]} />
+        <meshStandardMaterial color="#14141a" roughness={0.9} />
+      </mesh>
+      {/* Brass socket */}
+      <mesh position={[0, 0.075, 0]}>
+        <cylinderGeometry args={[0.035, 0.04, 0.09, 10]} />
+        <meshStandardMaterial color="#5a4a28" metalness={0.8} roughness={0.5} />
+      </mesh>
+      <mesh ref={bulb}>
+        <sphereGeometry args={[0.07, 14, 12]} />
+        <meshStandardMaterial color="#ffe0a0" emissive="#ffca70" emissiveIntensity={2.8} toneMapped={false} />
+      </mesh>
+      <pointLight ref={light} color="#ffca80" intensity={2.6} distance={8} decay={1.7} />
+    </group>
+  );
+}
+
+// A folding steel chair. Cold, hard, and entirely without ceremony.
+function PlainChair() {
+  const z = DEALER_POS[2] - 0.34 * DEALER_SCALE;
+  const seatY = FLOOR_Y + 0.92;
+  const mat = { color: '#2a2a32', metalness: 0.7, roughness: 0.55 };
+  return (
+    <group position={[DEALER_POS[0], 0, z]}>
+      <mesh position={[0, seatY, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.95, 0.05, 0.9]} />
+        <meshStandardMaterial {...mat} />
+      </mesh>
+      {/* Backrest, tipped back a touch */}
+      <mesh position={[0, seatY + 0.52, -0.42]} rotation={[-0.12, 0, 0]} castShadow>
+        <boxGeometry args={[0.9, 1.0, 0.05]} />
+        <meshStandardMaterial {...mat} />
+      </mesh>
+      {[[-0.4, -0.38], [0.4, -0.38], [-0.4, 0.38], [0.4, 0.38]].map(([x, dz], i) => (
+        <mesh key={i} position={[x, (seatY + FLOOR_Y) / 2, dz]} castShadow>
+          <cylinderGeometry args={[0.03, 0.03, seatY - FLOOR_Y, 8]} />
+          <meshStandardMaterial {...mat} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// A dented tin ashtray — the only thing on a cheap table.
+function TinAshtray() {
+  return (
+    <group position={[-1.35, TABLE_SURFACE_Y, -0.75]}>
+      <mesh castShadow receiveShadow>
+        <cylinderGeometry args={[0.13, 0.1, 0.035, 20]} />
+        <meshStandardMaterial color="#4a4a4e" metalness={0.65} roughness={0.72} />
+      </mesh>
+      <mesh position={[0, 0.019, 0]}>
+        <cylinderGeometry args={[0.105, 0.105, 0.004, 20]} />
+        <meshStandardMaterial color="#1a1a1e" roughness={0.95} />
+      </mesh>
+      {/* Two stubbed-out butts */}
+      {[[0.05, 0.03, 0.6], [-0.04, -0.05, -1.1]].map(([x, z, r], i) => (
+        <mesh key={i} position={[x, 0.028, z]} rotation={[Math.PI / 2, 0, r]}>
+          <cylinderGeometry args={[0.011, 0.011, 0.07, 8]} />
+          <meshStandardMaterial color="#d8cdb4" roughness={0.9} />
+        </mesh>
+      ))}
+    </group>
+  );
 }
 
 // Art Deco chandelier over the table — a visible source for the room's warm light.
@@ -1945,6 +2038,7 @@ interface SceneProps {
   dealerAction: DealerAction;
   finale: FinaleKind | null;
   viewMode: ViewMode;
+  look: Loadout;
 }
 
 function Scene({
@@ -1952,6 +2046,7 @@ function Scene({
   hand, selectedIndex, canSelect, onSelectCard,
   playerChips, opponentChips, pot, revealCeremony, playerGlow, opponentGlow, quality,
   playerSetsWon, opponentSetsWon, hintCard, showOpponent, opponentEyeColor, dealerAction, finale, viewMode,
+  look,
 }: SceneProps) {
   const preset = QUALITY_PRESETS[quality];
   const spot = useRef<THREE.SpotLight>(null);
@@ -2022,12 +2117,18 @@ function Scene({
       {/* Hangs off the chandelier, so its top tracks CHANDELIER_Y down to the table */}
       <VolumetricBeam position={[0, (CHANDELIER_Y + TABLE_SURFACE_Y) / 2, -0.9]} radiusTop={0.9} radiusBottom={2.1} height={CHANDELIER_Y - TABLE_SURFACE_Y} color="#f0d8a0" opacity={0.05} />
       <VolumetricBeam position={[0, 1.9, -0.3]} radiusTop={1.1} radiusBottom={2.7} height={3.6} color="#e8d0a0" opacity={0.03} />
-      <DistantColumns />
-      <Drapes />
-      <RoyalBanner x={-1.95} />
-      <RoyalBanner x={1.95} />
+      {/* Cosmetics. Each slot picks its cast; the shabby defaults are procedural so a new
+          account still gets a coherent room without any of the bought art. */}
+      {look.room === 'room.deco' && (
+        <>
+          <DistantColumns />
+          <Drapes />
+          <RoyalBanner x={-1.95} />
+          <RoyalBanner x={1.95} />
+        </>
+      )}
       <Railing />
-      <Chandelier />
+      {look.light === 'light.deco' ? <Chandelier /> : <BareBulb />}
       <Floor reflective={preset.reflectiveFloor} />
       <Carpet />
 
@@ -2047,8 +2148,10 @@ function Scene({
         role="dealer"
       />
       <Table />
-      {TABLE_PROPS.map((p) => <TableProp key={p.url} {...p} />)}
-      {showOpponent && <Chair />}
+      {look.props === 'props.vice'
+        ? TABLE_PROPS.map((p) => <TableProp key={p.url} {...p} />)
+        : <TinAshtray />}
+      {showOpponent && (look.seat === 'seat.throne' ? <Chair /> : <PlainChair />)}
       {showOpponent && !desertedGone && (
         <OpponentFigure
           personality={personality}
@@ -2150,6 +2253,8 @@ interface TableSceneProps {
   finale?: FinaleKind | null;
   /** Camera behaviour: seated at the table (default), lobby doorway, or the sit-down glide. */
   viewMode?: ViewMode;
+  /** Equipped cosmetics. Partial is fine — missing slots fall back to the free defaults. */
+  look?: Partial<Loadout>;
 }
 
 const noop = () => {};
@@ -2221,6 +2326,7 @@ export default function TableScene({
   dealerAction = 'idle',
   finale = null,
   viewMode = 'seated',
+  look,
 }: TableSceneProps) {
   const preset = QUALITY_PRESETS[quality];
   return (
@@ -2265,6 +2371,7 @@ export default function TableScene({
           dealerAction={dealerAction}
           finale={finale}
           viewMode={viewMode}
+          look={normalizeLoadout(look)}
         />
         </Suspense>
       </Canvas>

@@ -27,11 +27,19 @@ model User {
   // recovery is resume-from-DB (see PvpRoom); pvpStake is the safety net — on boot, any
   // stake whose room could NOT be restored is refunded, so no buy-in ever vanishes.
   pvpStake     Int?
+  // 金印 — the cosmetic currency, deliberately separate from chips. Chips are the stake
+  // and can be lost at the table; seals are earned by achievement and buy only
+  // appearances. Nothing bought with seals can ever be gambled away, which is the whole
+  // reason for the split: what a player owns stays owned.
+  seals        Int      @default(0)
+  /** Equipped cosmetics, { slot: itemId }. Normalised on read — see lib/shop.ts. */
+  loadout      Json?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   cardPlayStats  CardPlayStat[]
   cardPlayEvents CardPlayEvent[]
+  ownedItems     OwnedItem[]
 }
 
 enum Role {
@@ -95,6 +103,20 @@ model PvpRoom {
 // match — chiefly "your match was voided by a restart and the buy-in refunded". Delivered
 // on their next ws connect, then deleted. Without this the player just finds their room
 // gone and reads it as a bug.
+// A cosmetic the player owns. Free defaults are never written here — ownership of those
+// is implicit, so a fresh account needs no seeding.
+model OwnedItem {
+  id       String   @id @default(cuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemId   String // matches an id in lib/shop.ts
+  boughtAt DateTime @default(now())
+  /** What was paid, kept for the record even if the price later changes. */
+  paid     Int      @default(0)
+
+  @@unique([userId, itemId])
+}
+
 model PvpNotice {
   id        String   @id @default(cuid())
   userId    String   @unique // one pending notice per player; a newer one supersedes
