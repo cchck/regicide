@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useReducer, useCallback, useEffect, useRef, useState } from 'react';
+import { useReducer, useCallback, useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { gameReducer, initialState } from '@/lib/game-engine';
@@ -19,18 +19,12 @@ import { useLoadout } from '@/lib/useLoadout';
 import RotatePrompt from './RotatePrompt';
 import DecoButton from './DecoButton';
 import Flourish from './Flourish';
-import TierCard, { STAKES_TIERS, StakesTier } from './TierCard';
+import { STAKES_TIERS } from './TierCard';
+
+/** Drawn blind when the house sits down. Never surfaced — see the handoff effect below. */
+const AI_TEMPERAMENTS = ['aggressive', 'cautious', 'deceptive'] as const;
 import { CHIPS_EVENT, MATCH_EVENT } from './AccountBar';
 import BackButton from './BackButton';
-
-function MenuSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="relative border border-border-subtle/70 rounded-sm px-6 sm:px-10 pt-8 pb-9 w-full">
-      <span className="absolute -top-3 left-7 px-3 bg-void text-xs tracking-[5px] text-blood uppercase font-display">{title}</span>
-      <div className="flex flex-col gap-9">{children}</div>
-    </div>
-  );
-}
 
 function ScreenFlash({ type }: { type: 'emperor-win' | 'slave-kill' | 'fold' | null }) {
   if (!type) return null;
@@ -344,7 +338,6 @@ export default function GameBoard() {
   }, [matchPointNow]);
 
   // ————— Menu routing + tutorial state machine —————
-  const [menuView, setMenuView] = useState<'hub' | 'setup'>('hub');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // ————— Hub stagecraft: the lobby camera, the host's beckons, the sit-down —————
@@ -409,7 +402,6 @@ export default function GameBoard() {
       localStorage.setItem('regicide-tutorial-done', '1');
       setTutorialDone(true);
       setTutorial(null);
-      setMenuView('hub');
       dispatch({ type: 'BACK_TO_MENU' });
       return;
     }
@@ -435,7 +427,7 @@ export default function GameBoard() {
 
   // Persistent bankroll wiring — logged-in players buy in from the database balance
   // and settle back to it when the match ends. Guests play with local chips only.
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
   const loggedIn = !!session?.user;
   // The room the player has earned/bought. Guests keep the free defaults.
   const look = useLoadout(loggedIn);
@@ -527,25 +519,8 @@ export default function GameBoard() {
     }
   }, [loggedIn]);
 
-  // Bankruptcy relief — only offered when the balance can't cover the cheapest table.
-  const [reliefBusy, setReliefBusy] = useState(false);
-  const handleRelief = useCallback(async () => {
-    setReliefBusy(true);
-    setMenuError(null);
-    try {
-      const res = await fetch('/api/relief', { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setMenuError(data.error || `领取失败（HTTP ${res.status}）`);
-        return;
-      }
-      updateBalance(data.balance);
-    } catch {
-      setMenuError('网络错误，领取失败');
-    } finally {
-      setReliefBusy(false);
-    }
-  }, [updateBalance]);
+  // Bankruptcy relief now lives on /pvp, next to the buy-in cards — that's the only screen
+  // where "I can't afford any table" is something the player can act on.
 
   const handleStart = useCallback(async (
     d: 'easy' | 'normal' | 'hard',
@@ -582,6 +557,32 @@ export default function GameBoard() {
       setStarting(false);
     }
   }, [loggedIn]);
+
+  // ————— Handed off from quick match: the house took the seat —————
+  // /pvp sends us here as `/?table=<tierKey>` when the waiting line turned up nobody. The
+  // stake was already chosen there, so there is nothing left to ask: deal.
+  //
+  // The temperament is drawn at random and never shown. Letting a player pick their
+  // opponent's personality quietly dismantles the entire game — the whole point is to read
+  // someone you don't know yet, and a menu that tells you "this one bluffs" hands over the
+  // answer before the first card.
+  const handoffRef = useRef(false);
+  useEffect(() => {
+    if (handoffRef.current) return;
+    // Wait for the session to resolve before dealing. `loggedIn` is false while it loads,
+    // and handleStart's guest path skips the buy-in entirely — firing early would hand out
+    // a free match at whatever tier the URL names.
+    if (sessionStatus === 'loading') return;
+    const key = new URLSearchParams(window.location.search).get('table');
+    if (!key) return;
+    handoffRef.current = true;
+    window.history.replaceState(null, '', '/'); // a refresh must not re-deal
+    const t = STAKES_TIERS.find((s) => s.key === key);
+    if (!t) return;
+    const rolled = AI_TEMPERAMENTS[Math.floor(Math.random() * AI_TEMPERAMENTS.length)];
+    // One glide into the seat, exactly as the tutorial does, then the cards.
+    sitDown(() => { void handleStart(t.difficulty, rolled, t.buyIn); });
+  }, [sessionStatus, sitDown, handleStart]);
 
   // Report each resolved round to the tendency log — the raw material for the
   // future "read your opponent" PvP feature. Once per round, logged-in users only.
@@ -776,8 +777,8 @@ export default function GameBoard() {
 
     // The lobby IS the casino: the real table scene at a doorway camera, the host
     // waiting. Entering a mode that plays at THIS table glides the camera into the
-    // seat first; the setup panel then floats over the seated view.
-    const menuCam: ViewMode = sitting || menuView === 'setup' ? 'transition' : 'lobby';
+    // seat first.
+    const menuCam: ViewMode = sitting ? 'transition' : 'lobby';
     const menuScene = (
       <div className="fixed inset-0">
         <TableScene
@@ -795,26 +796,6 @@ export default function GameBoard() {
       </div>
     );
 
-    if (menuView === 'setup') {
-      return (
-        <>
-          {menuScene}
-          {/* A dark pane over the seated view — you're at the table, choosing stakes */}
-          <div className="fixed inset-0 z-10 bg-void/70 overflow-y-auto fade-in">
-            <SetupScreen
-              onStart={handleStart}
-              onBack={() => setMenuView('hub')}
-              starting={starting}
-              error={menuError}
-              balance={balance}
-              onRelief={handleRelief}
-              reliefBusy={reliefBusy}
-            />
-          </div>
-          {menuChrome}
-        </>
-      );
-    }
     return (
       <>
         {menuScene}
@@ -823,13 +804,31 @@ export default function GameBoard() {
           sitting={sitting}
           onEnter={(key) => {
             if (key === 'tutorial') sitDown(() => startTutorialScene(0));
-            else if (key === 'ai') sitDown(() => setMenuView('setup'));
-            else if (key === 'pvp') router.push('/pvp');
+            else if (key === 'duel') router.push('/pvp');
             else if (key === 'dossier') router.push('/dossier');
             else if (key === 'shop') router.push('/shop');
             else router.push('/ledger');
           }}
         />
+
+        {/* The buy-in can still fail on the way in (the balance moved, the network died).
+            With the setup screen gone the hub is the only place left to say so — silently
+            landing back here would read as the button simply not working. */}
+        {(starting || menuError) && (
+          <div className="fixed top-28 inset-x-0 z-20 flex justify-center px-6 pointer-events-none">
+            <div
+              className={
+                'px-6 py-3 text-center backdrop-blur-md fade-in ' +
+                (menuError ? 'border-t border-b border-blood/60 bg-blood-surface/80' : 'border border-border/60 bg-black/70')
+              }
+            >
+              <p className={'text-sm tracking-[3px] font-display ' + (menuError ? 'text-blood-glow' : 'text-text-secondary')}>
+                {menuError ?? '入 场 中 …'}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Interrupted-match rescue — the stake is already on the table, offer the seat back */}
         {resumable && (
           <div
@@ -1216,7 +1215,7 @@ export default function GameBoard() {
           durationSec={matchStartRef.current ? (Date.now() - matchStartRef.current) / 1000 : null}
           settled={loggedIn}
           sealsEarned={sealsEarned}
-          onExit={() => { setMenuView('hub'); dispatch({ type: 'BACK_TO_MENU' }); }}
+          onExit={() => { dispatch({ type: 'BACK_TO_MENU' }); }}
         />
       )}
     </div>
@@ -1225,7 +1224,10 @@ export default function GameBoard() {
 
 // ————————————————————————————— Menu screens —————————————————————————————
 
-type HubEntryKey = 'tutorial' | 'ai' | 'pvp' | 'dossier' | 'ledger' | 'shop';
+// One 对战 door, not two. Whether the seat opposite holds a person or the house is a
+// detail of who happens to be awake — it isn't a mode the player should have to choose,
+// and making them choose it advertised "you are playing a bot" before a card was dealt.
+type HubEntryKey = 'tutorial' | 'duel' | 'dossier' | 'ledger' | 'shop';
 
 const HUB_INK = {
   teal: { text: '#3fb3b3', rgb: '63,179,179' },
@@ -1244,8 +1246,7 @@ function HubScreen({ tutorialDone, sitting, onEnter }: {
 }) {
   const entries: { key: HubEntryKey; glyph: string; title: string; sub: string; ink: keyof typeof HUB_INK; flag?: boolean }[] = [
     { key: 'tutorial', glyph: '习', title: '新手引导', sub: '三幕入局 · 五分钟', ink: 'teal', flag: !tutorialDone },
-    { key: 'ai', glyph: '弈', title: 'AI 对战', sub: '三种性格 · 三档赌局', ink: 'blood' },
-    { key: 'pvp', glyph: '决', title: '真人对战', sub: '房间码 · 全额买入', ink: 'blood' },
+    { key: 'duel', glyph: '决', title: '对 战', sub: '匹配入座 · 约人开桌', ink: 'blood' },
     { key: 'dossier', glyph: '档', title: '密 档', sub: '你的出牌倾向', ink: 'amber' },
     { key: 'ledger', glyph: '榜', title: '血 榜', sub: '谁主宰这座大厅', ink: 'amber' },
     { key: 'shop', glyph: '铺', title: '当 铺', sub: '给这间房换个排面', ink: 'amber' },
@@ -1354,96 +1355,6 @@ function HubScreen({ tutorialDone, sitting, onEnter }: {
   );
 }
 
-function SetupScreen({ onStart, onBack, starting = false, error = null, balance = null, onRelief, reliefBusy = false }: {
-  onStart: (difficulty: 'easy' | 'normal' | 'hard', personality: 'aggressive' | 'cautious' | 'deceptive', buyIn: number) => void;
-  onBack: () => void;
-  starting?: boolean;
-  error?: string | null;
-  balance?: number | null;
-  onRelief?: () => void;
-  reliefBusy?: boolean;
-}) {
-  const [personality, setPersonality] = useState<'aggressive' | 'cautious' | 'deceptive'>('cautious');
-  const [tier, setTier] = useState<StakesTier['key']>('flicker');
-
-  const persos = [
-    { key: 'aggressive' as const, label: '激进', color: 'blood' as const },
-    { key: 'cautious' as const, label: '谨慎', color: 'teal' as const },
-    { key: 'deceptive' as const, label: '诡诈', color: 'amber' as const },
-  ];
-
-  return (
-    <div className="h-full overflow-y-auto flex flex-col items-center justify-center gap-10 px-4 py-10 relative">
-      <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-blood-dim to-transparent" />
-      <BackButton onClick={onBack} />
-      <div className="text-center slide-up">
-        <p className="font-gothic text-cracked text-5xl sm:text-6xl tracking-[10px] text-blood leading-none">弈</p>
-        <p className="text-sm tracking-[6px] text-text-secondary font-display mt-4 uppercase">AI 对 战</p>
-      </div>
-
-      <div className="flex flex-col gap-10 w-full max-w-3xl fade-in-up" style={{ animationDelay: '150ms' }}>
-        <MenuSection title="牌局设置">
-          <div>
-            <div className="flex items-baseline justify-between mb-4">
-              <p className="text-sm tracking-[4px] text-text-secondary uppercase font-display">赌局</p>
-              {balance !== null && (
-                <p className="text-xs tracking-[2px] text-text-dim font-display">
-                  账户余额 <span className="text-amber-bright font-bold text-sm">{balance}</span> 筹码
-                </p>
-              )}
-            </div>
-            <div className="flex gap-4">
-              {STAKES_TIERS.map((t) => (
-                <TierCard key={t.key} tier={t} selected={tier === t.key} onClick={() => setTier(t.key)} />
-              ))}
-            </div>
-            {/* Broke? The house extends a hand — only visible below the cheapest buy-in. */}
-            {balance !== null && balance < 100 && onRelief && (
-              <div className="mt-5 flex items-center justify-between border border-amber/25 bg-black/35 px-5 py-3.5"
-                style={{ boxShadow: 'inset 0 0 14px rgba(0,0,0,0.4)' }}>
-                <div>
-                  <p className="text-sm text-text-secondary tracking-[2px] font-display">余额不足最低买入（100）</p>
-                  <p className="text-[11px] text-text-dim tracking-[2px] font-display mt-1">山穷水尽时，赌场愿意借你一把火</p>
-                </div>
-                <DecoButton color="amber" size="sm" onClick={onRelief} disabled={reliefBusy}>
-                  {reliefBusy ? '领取中…' : '领取救济金 +200'}
-                </DecoButton>
-              </div>
-            )}
-          </div>
-
-          <div>
-            <p className="text-sm tracking-[4px] text-text-secondary uppercase mb-4 font-display">AI 性格</p>
-            <div className="flex gap-4">
-              {persos.map((p) => (
-                <DecoButton key={p.key} onClick={() => setPersonality(p.key)} color={p.color} size="lg" selected={personality === p.key} fullWidth>{p.label}</DecoButton>
-              ))}
-            </div>
-          </div>
-
-          {error && (
-            <div className="border-t border-b border-blood/60 bg-blood-surface/70 px-4 py-2.5 text-center fade-in">
-              <p className="text-blood-glow text-sm tracking-[3px] font-display">{error}</p>
-            </div>
-          )}
-
-          <DecoButton
-            onClick={() => {
-              const t = STAKES_TIERS.find((s) => s.key === tier)!;
-              onStart(t.difficulty, personality, t.buyIn);
-            }}
-            color="blood"
-            size="lg"
-            fullWidth
-            disabled={starting}
-          >
-            {starting ? '入 场 中 …' : '开始对局'}
-          </DecoButton>
-        </MenuSection>
-      </div>
-    </div>
-  );
-}
 
 // ————————————————————————————— Settings —————————————————————————————
 

@@ -15,6 +15,7 @@ import RotatePrompt from '@/components/RotatePrompt';
 import EmoteDock, { Emote, EMOTE_ACTION } from '@/components/EmoteDock';
 import { BetPicker, BetActions, StatusStrip, VerdictBar } from '@/components/GameBoard';
 import TierCard, { STAKES_TIERS, StakesTier } from '@/components/TierCard';
+import Matchmaking, { SeatPhase } from '@/components/Matchmaking';
 import DecoButton from '@/components/DecoButton';
 import Flourish from '@/components/Flourish';
 import BackButton from '@/components/BackButton';
@@ -50,9 +51,19 @@ function TimerPill({ deadline }: { deadline: number | null }) {
   );
 }
 
+/**
+ * How long the house waits for a human before sitting down itself.
+ *
+ * Long enough that a real opponent arriving in the same minute still gets matched, short
+ * enough that a lone player isn't punished for the lobby being empty. The wait is real —
+ * there's an actual server-side queue behind it — so this is a give-up threshold, not a
+ * scripted delay pretending to be a search.
+ */
+const HOUSE_SITS_AFTER_MS = 12_000;
+
 export default function PvpPage() {
   const router = useRouter();
-  const { status } = useSession();
+  const { status, data: session } = useSession();
   const socketRef = useRef<Socket | null>(null);
   const [stage, setStage] = useState<Stage>('lobby');
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +90,15 @@ export default function PvpPage() {
   // the socket is up; consumed once so a later disconnect doesn't re-trigger it.
   const inviteRef = useRef<string | null>(null);
   const [invite, setInvite] = useState<string | null>(null);
+
+  // ————— Quick match —————
+  // `seatPhase` drives the ceremony overlay; `houseTimer` is the give-up clock that seats
+  // the house when the queue turns up nobody.
+  const [seatPhase, setSeatPhase] = useState<SeatPhase | null>(null);
+  const [seatOpp, setSeatOpp] = useState<{ name: string; isHouse: boolean } | null>(null);
+  const houseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handoffTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showCodePanel, setShowCodePanel] = useState(false);
 
   // Local per-round selection (mirrors GameBoard's tentative pick).
   const [selectedCard, setSelectedCard] = useState<CardType | null>(null);
@@ -166,6 +186,13 @@ export default function PvpPage() {
           fetch('/api/me').then((r) => (r.ok ? r.json() : null)).then((d) => {
             if (d && typeof d.chips === 'number') setBalance(d.chips);
           }).catch(() => {});
+        });
+        // Picked up out of the quick-match line by someone who arrived after us. The
+        // 'view' event is already in flight; this just tells us who sat down.
+        socket.on('matched', (m: { oppName: string }) => {
+          if (houseTimer.current) { clearTimeout(houseTimer.current); houseTimer.current = null; }
+          setSeatOpp({ name: m.oppName || '对家', isHouse: false });
+          setSeatPhase('seated');
         });
         socket.on('view', (v: PvpView) => {
           setView(v);
@@ -260,6 +287,106 @@ export default function PvpPage() {
     });
   }, []);
 
+  // ————————————————————————— Quick match —————————————————————————
+
+  const clearSeatTimers = useCallback(() => {
+    if (houseTimer.current) { clearTimeout(houseTimer.current); houseTimer.current = null; }
+    if (handoffTimer.current) { clearTimeout(handoffTimer.current); handoffTimer.current = null; }
+  }, []);
+
+  /**
+   * Nobody answered. The house takes the seat itself — and the overlay says so rather than
+   * dressing an AI up in a fake player name. The AI match lives on the hub route, so we
+   * hold the "庄家入座" plate on screen long enough to read, then hand off.
+   */
+  const seatTheHouse = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket) {
+      setSeatPhase(null);
+      setError('与对战服务器断开，请重试');
+      return;
+    }
+    // Leaving the queue is what makes this safe, so we wait for the server to confirm it
+    // rather than assuming. A human could have been matched to us in the same instant the
+    // give-up timer fired; in that case a room already holds our buy-in, and dealing an AI
+    // hand here would abandon it. The server answers from the queue itself, so the two
+    // outcomes can never both be true.
+    socket.timeout(4000).emit('cancel-quick', (err: unknown, res: { wasQueued?: boolean }) => {
+      if (err) {
+        // No answer — we don't know which way it went, so we don't gamble the buy-in.
+        // Dropping to the lobby is safe: a live match reasserts itself on reconnect.
+        setSeatPhase(null);
+        setError('匹配超时，请重试');
+        return;
+      }
+      if (!res?.wasQueued) return; // already seated with a human — that flow owns us now
+      setSeatOpp({ name: '庄 家', isHouse: true });
+      setSeatPhase('seated');
+      audio.sfx('click');
+      handoffTimer.current = setTimeout(() => {
+        router.push(`/?table=${tier}`);
+      }, 2600);
+    });
+  }, [router, tier]);
+
+  const quickMatch = useCallback(() => {
+    setError(null);
+    setBusy(true);
+    socketRef.current?.emit(
+      'quick-match',
+      { tierKey: tier },
+      (res: { queued?: boolean; matched?: boolean; oppName?: string; error?: string }) => {
+        setBusy(false);
+        if (res?.error) return setError(res.error);
+        if (res?.matched) {
+          // Someone was already waiting — the 'view' event is already on its way.
+          setSeatOpp({ name: res.oppName ?? '对家', isHouse: false });
+          setSeatPhase('seated');
+          return;
+        }
+        setSeatPhase('searching');
+        setSeatOpp(null);
+        houseTimer.current = setTimeout(seatTheHouse, HOUSE_SITS_AFTER_MS);
+      },
+    );
+  }, [tier, seatTheHouse]);
+
+  // Bankruptcy relief. It belongs here now: this is the screen where you choose a buy-in,
+  // so it's the only place where "I can't afford any table" is actionable.
+  const [reliefBusy, setReliefBusy] = useState(false);
+  const claimRelief = useCallback(async () => {
+    setReliefBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/relief', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return setError(data.error || `领取失败（HTTP ${res.status}）`);
+      setBalance(data.balance);
+    } catch {
+      setError('网络错误，领取失败');
+    } finally {
+      setReliefBusy(false);
+    }
+  }, []);
+
+  const cancelQuick = useCallback(() => {
+    clearSeatTimers();
+    socketRef.current?.emit('cancel-quick', () => {});
+    setSeatPhase(null);
+    setSeatOpp(null);
+  }, [clearSeatTimers]);
+
+  useEffect(() => () => clearSeatTimers(), [clearSeatTimers]);
+
+  // A real opponent sat down: hold the two nameplates long enough to read a name, then
+  // drop the overlay onto the table underneath — which by now is already dealt and live.
+  // (The house branch doesn't come through here; it navigates away instead.)
+  useEffect(() => {
+    if (seatPhase !== 'seated' || seatOpp?.isHouse) return;
+    const t = setTimeout(() => setSeatPhase(null), 2000);
+    return () => clearTimeout(t);
+  }, [seatPhase, seatOpp]);
+
   // clipboard.writeText needs a secure context; fall back to the old textarea trick so
   // copying still works over plain http (a LAN IP during testing, say).
   const writeClipboard = useCallback(async (text: string) => {
@@ -299,6 +426,18 @@ export default function PvpPage() {
       if (res?.error) setError(res.error);
     });
   }, []);
+
+  // The seating ceremony floats over whatever stage we're in: it starts in the lobby and
+  // is still on screen when the dealt table appears underneath it.
+  const seatOverlay = seatPhase ? (
+    <Matchmaking
+      tier={STAKES_TIERS.find((t) => t.key === tier)!}
+      phase={seatPhase}
+      opponent={seatOpp}
+      myName={session?.user?.name || '你'}
+      onCancel={cancelQuick}
+    />
+  ) : null;
 
   // ————— gates —————
 
@@ -383,6 +522,8 @@ export default function PvpPage() {
     return (
       <main className="h-screen bg-void">
         <RotatePrompt />
+        {/* Still showing the two nameplates for a beat — the table below is already dealt. */}
+        {seatOverlay}
         <div className="h-full flex flex-col relative">
           {!pvpFinale && (
             <VerdictBar
@@ -664,109 +805,204 @@ export default function PvpPage() {
   }
 
   // ————— lobby —————
+  // One screen, one dominant action. The old split ("开设赌局" | "凭码入座") made two
+  // co-equal panels out of what is really a primary and a fallback: almost everyone wants
+  // to just sit down and play, and only a minority is arranging a table with a friend.
+
+  const chosen = STAKES_TIERS.find((t) => t.key === tier)!;
+  const canAfford = balance === null || balance >= chosen.buyIn;
+  const broke = balance !== null && balance < STAKES_TIERS[0].buyIn;
 
   return (
-    <main className="min-h-screen bg-void relative overflow-hidden flex flex-col items-center justify-center gap-10 px-4 py-14">
-      <BackButton onClick={() => router.push('/')} />
-      {/* Ambient wash — blood above, teal below, echoing the two panels */}
+    <main className="h-screen bg-void relative overflow-hidden">
+      {/* The lobby IS the room: the real table, with the seat opposite still empty. Sitting
+          down should feel like walking to a table you can already see. */}
+      <div className="absolute inset-0 pointer-events-none">
+        <TableScene
+          personality="cautious"
+          showOpponent={false}
+          hand={[]}
+          playerChips={chosen.buyIn}
+          opponentChips={0}
+          pot={0}
+          quality={quality}
+        />
+      </div>
       <div
-        className="fixed inset-0 pointer-events-none"
-        style={{
-          background:
-            'radial-gradient(ellipse 80% 50% at 50% 0%, rgba(170,17,17,0.09) 0%, transparent 60%),' +
-            'radial-gradient(ellipse 80% 50% at 50% 100%, rgba(42,138,138,0.06) 0%, transparent 60%)',
-        }}
+        className="absolute inset-0 pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse 75% 65% at 50% 40%, rgba(2,2,6,0.32) 0%, rgba(2,2,6,0.9) 100%)' }}
       />
 
-      <div className="relative text-center slide-up">
-        <div className="flex items-center justify-center gap-4 mb-2">
-          <Flourish />
-          <p className="font-gothic text-cracked text-5xl sm:text-6xl tracking-[10px] text-blood leading-none">决</p>
-          <Flourish flip />
-        </div>
-        <p className="text-sm tracking-[6px] text-text-secondary font-display mt-4 uppercase">真 人 对 战 · 房 间 码</p>
-        {balance !== null && (
-          <p className="text-xs tracking-[2px] text-text-dim font-display mt-3">
-            账户余额 <span className="text-amber-bright font-bold text-sm">{balance}</span> 筹码 · 全额买入制
-          </p>
-        )}
-        {!connected && !error && <p className="text-xs tracking-[2px] text-text-dim font-display mt-2">连接对战服务器中…</p>}
-        {invite && connected && !error && (
-          <p className="text-xs tracking-[3px] text-amber font-display mt-2">正在落座 {invite} …</p>
-        )}
-      </div>
+      <BackButton onClick={() => router.push('/')} />
 
-      {/* A match that ended while we were away — say so, or the player reads it as a bug */}
-      {notice && (
-        <div
-          className="relative flex items-center gap-5 px-6 py-3.5 border border-amber/60 bg-black/80 backdrop-blur-md fade-in"
-          style={{ boxShadow: '0 0 30px rgba(196,154,48,0.18), inset 0 0 16px rgba(0,0,0,0.5)' }}
-        >
-          <div>
-            <p className="text-sm tracking-[3px] font-display text-amber-bright">上一场对局已作废</p>
-            <p className="text-[11px] tracking-[2px] text-text-secondary font-display mt-1">
-              服务器重启导致该局中断
-              {notice.refund > 0 && <> · 买入 <span className="text-amber-bright font-bold">{notice.refund}</span> 筹码已全额退回</>}
-            </p>
+      {/* Centring lives on the INNER box, not the scroller. `justify-center` on an element
+          that also scrolls pushes overflow past its own top edge, where it can't be
+          reached — on a short landscape phone that would bury the masthead. */}
+      <div className="relative z-10 h-full overflow-y-auto">
+        <div className="min-h-full flex flex-col items-center justify-center gap-7 px-4 py-12">
+        {/* ————— Masthead ————— */}
+        <div className="text-center slide-up shrink-0">
+          <div className="flex items-center justify-center gap-4">
+            <Flourish />
+            <p className="font-gothic text-cracked text-5xl sm:text-6xl tracking-[10px] text-blood leading-none">决</p>
+            <Flourish flip />
           </div>
-          <DecoButton color="neutral" size="sm" onClick={() => setNotice(null)}>知 道 了</DecoButton>
+          <p className="text-sm tracking-[7px] text-text-secondary font-display mt-4 uppercase">对 战</p>
+          <p className="text-[11px] tracking-[3px] text-text-muted font-display mt-2.5">
+            两个座位 · 一副牌 · 只有一个人站着离开
+          </p>
+          {balance !== null && (
+            <p className="text-xs tracking-[2px] text-text-dim font-display mt-3">
+              账户余额 <span className="text-amber-bright font-bold text-sm">{balance}</span> 筹码 · 全额买入制
+            </p>
+          )}
+          {!connected && !error && (
+            <p className="text-xs tracking-[2px] text-text-dim font-display mt-2">连接对战服务器中…</p>
+          )}
+          {invite && connected && !error && (
+            <p className="text-xs tracking-[3px] text-amber font-display mt-2">正在落座 {invite} …</p>
+          )}
         </div>
-      )}
 
-      <div className="relative grid lg:grid-cols-5 gap-6 w-full max-w-5xl fade-in-up" style={{ animationDelay: '150ms' }}>
-        {/* 开设赌局 — the main act */}
-        <section className="lg:col-span-3 relative border border-border/70 bg-abyss/70 backdrop-blur-sm px-6 sm:px-8 pt-9 pb-8">
-          <span className="absolute top-2 left-2 w-5 h-5 border-t border-l border-blood/80" />
-          <span className="absolute top-2 right-2 w-5 h-5 border-t border-r border-blood/80" />
-          <span className="absolute bottom-2 left-2 w-5 h-5 border-b border-l border-blood/80" />
-          <span className="absolute bottom-2 right-2 w-5 h-5 border-b border-r border-blood/80" />
-          <span className="absolute -top-3 left-7 px-3 bg-void text-xs tracking-[5px] text-blood uppercase font-display">开 设 赌 局</span>
+        {/* A match that ended while we were away — say so, or the player reads it as a bug */}
+        {notice && (
+          <div
+            className="flex items-center gap-5 px-6 py-3.5 border border-amber/60 bg-black/80 backdrop-blur-md fade-in shrink-0"
+            style={{ boxShadow: '0 0 30px rgba(196,154,48,0.18), inset 0 0 16px rgba(0,0,0,0.5)' }}
+          >
+            <div>
+              <p className="text-sm tracking-[3px] font-display text-amber-bright">上一场对局已作废</p>
+              <p className="text-[11px] tracking-[2px] text-text-secondary font-display mt-1">
+                服务器重启导致该局中断
+                {notice.refund > 0 && <> · 买入 <span className="text-amber-bright font-bold">{notice.refund}</span> 筹码已全额退回</>}
+              </p>
+            </div>
+            <DecoButton color="neutral" size="sm" onClick={() => setNotice(null)}>知 道 了</DecoButton>
+          </div>
+        )}
 
-          <div className="flex gap-3 sm:gap-4 mb-7">
+        {/* ————— Pick your table ————— */}
+        <div className="w-full max-w-3xl fade-in-up shrink-0" style={{ animationDelay: '120ms' }}>
+          <div className="flex items-center gap-4 mb-4">
+            <span className="text-[10px] tracking-[5px] text-text-dim uppercase font-display whitespace-nowrap">选 择 台 位</span>
+            <div className="deco-line flex-1" />
+          </div>
+          <div className="flex gap-2.5 sm:gap-4">
             {STAKES_TIERS.map((t) => (
-              <TierCard key={t.key} tier={t} selected={tier === t.key} onClick={() => setTier(t.key)} />
+              <TierCard
+                key={t.key}
+                tier={t}
+                selected={tier === t.key}
+                affordable={balance === null || balance >= t.buyIn}
+                onClick={() => setTier(t.key)}
+              />
             ))}
           </div>
-          <div style={{ filter: connected ? 'drop-shadow(0 0 16px rgba(170,17,17,0.35))' : 'none' }}>
-            <DecoButton color="blood" size="lg" fullWidth disabled={busy || !connected} onClick={createRoom}>
-              {busy ? '开 桌 中 …' : '创 建 房 间'}
+        </div>
+
+        {/* Broke? The house extends a hand — only below the cheapest buy-in. */}
+        {broke && (
+          <div
+            className="w-full max-w-3xl flex flex-col sm:flex-row items-center justify-between gap-4 border border-amber/25 bg-black/55 px-5 py-3.5 fade-in shrink-0"
+            style={{ boxShadow: 'inset 0 0 14px rgba(0,0,0,0.4)' }}
+          >
+            <div className="text-center sm:text-left">
+              <p className="text-sm text-text-secondary tracking-[2px] font-display">余额不足最低买入（{STAKES_TIERS[0].buyIn}）</p>
+              <p className="text-[11px] text-text-dim tracking-[2px] font-display mt-1">山穷水尽时，赌场愿意借你一把火</p>
+            </div>
+            <DecoButton color="amber" size="sm" onClick={claimRelief} disabled={reliefBusy}>
+              {reliefBusy ? '领 取 中 …' : '领取救济金 +200'}
             </DecoButton>
           </div>
-          <p className="text-center text-[10px] tracking-[3px] text-text-dim font-display mt-3">
-            创建后获得六位暗号 · 对手入座即开局
-          </p>
-        </section>
+        )}
 
-        {/* 凭码入座 */}
-        <section className="lg:col-span-2 relative border border-border/70 bg-abyss/70 backdrop-blur-sm px-6 sm:px-8 pt-9 pb-8 flex flex-col">
-          <span className="absolute top-2 left-2 w-5 h-5 border-t border-l border-teal/80" />
-          <span className="absolute top-2 right-2 w-5 h-5 border-t border-r border-teal/80" />
-          <span className="absolute bottom-2 left-2 w-5 h-5 border-b border-l border-teal/80" />
-          <span className="absolute bottom-2 right-2 w-5 h-5 border-b border-r border-teal/80" />
-          <span className="absolute -top-3 left-7 px-3 bg-void text-xs tracking-[5px] text-teal uppercase font-display">凭 码 入 座</span>
+        {/* ————— The one big button ————— */}
+        <div className="w-full max-w-3xl fade-in-up shrink-0" style={{ animationDelay: '240ms' }}>
+          <button
+            type="button"
+            onClick={quickMatch}
+            disabled={busy || !connected || !canAfford}
+            className="group relative w-full py-6 sm:py-7 transition-all duration-300 enabled:hover:-translate-y-1 enabled:active:translate-y-0 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{
+              clipPath: CLIP_10,
+              background: 'linear-gradient(180deg, rgba(60,10,10,0.9) 0%, rgba(12,4,6,0.96) 100%)',
+              boxShadow:
+                'inset 0 0 0 1px rgba(221,34,34,0.65), inset 0 0 34px rgba(170,17,17,0.2), 0 0 40px rgba(170,17,17,0.28), 0 16px 36px rgba(0,0,0,0.7)',
+            }}
+          >
+            <span
+              className="absolute top-0 inset-x-0 h-[2px] pointer-events-none"
+              style={{ background: 'linear-gradient(90deg, transparent, #dd2222, transparent)', boxShadow: '0 0 14px rgba(221,34,34,0.8)' }}
+            />
+            <span
+              className="absolute inset-0 opacity-0 group-enabled:group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+              style={{ clipPath: CLIP_10, background: 'radial-gradient(ellipse 60% 100% at 50% 120%, rgba(221,34,34,0.28), transparent 70%)' }}
+            />
+            <span
+              className="absolute pointer-events-none"
+              style={{ inset: '6px', clipPath: CLIP_10, border: '1px solid rgba(221,34,34,0.28)' }}
+            />
+            <span className="relative block font-display font-black text-xl sm:text-2xl tracking-[10px] text-text-bright"
+              style={{ textShadow: '0 0 22px rgba(221,34,34,0.7), 0 2px 6px rgba(0,0,0,0.9)' }}>
+              {busy ? '入 场 中 …' : '快 速 入 座'}
+            </span>
+            <span className="relative block text-[10px] tracking-[3px] text-text-muted font-display mt-2.5">
+              系统为你寻找同台位的对家 · 无人应答时由庄家接手
+            </span>
+          </button>
+        </div>
 
-          <p className="text-xs tracking-[2px] text-text-dim font-display mb-5">向房主索要六位暗号，入座即视为接受该桌买入。</p>
-          <input
-            value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-            maxLength={6}
-            placeholder="······"
-            className="w-full bg-black/55 border border-border text-text-bright px-5 py-5 text-2xl tracking-[14px] font-display font-black outline-none text-center uppercase focus:border-teal transition-colors mb-5"
-            style={{ boxShadow: 'inset 0 0 14px rgba(0,0,0,0.5)' }}
-          />
-          <div className="mt-auto">
-            <DecoButton color="teal" size="lg" fullWidth disabled={busy || !connected} onClick={joinRoom}>
-              入 座
+        {/* ————— The fallback: arrange a table yourself ————— */}
+        <div className="w-full max-w-3xl fade-in-up shrink-0" style={{ animationDelay: '340ms' }}>
+          <div className="flex items-center gap-4 mb-4">
+            <div className="deco-line flex-1" />
+            <span className="text-[10px] tracking-[5px] text-text-dim uppercase font-display whitespace-nowrap">或 者 · 约 人 开 桌</span>
+            <div className="deco-line flex-1" />
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <DecoButton color="amber" size="md" fullWidth disabled={busy || !connected || !canAfford} onClick={createRoom}>
+              {busy ? '开 桌 中 …' : '开 桌 · 发 暗 号'}
+            </DecoButton>
+            <DecoButton
+              color="teal"
+              size="md"
+              fullWidth
+              selected={showCodePanel}
+              onClick={() => setShowCodePanel((v) => !v)}
+            >
+              凭 码 入 座
             </DecoButton>
           </div>
-        </section>
+
+          {showCodePanel && (
+            <div className="flex flex-col sm:flex-row gap-3 mt-3 fade-in">
+              <input
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                onKeyDown={(e) => { if (e.key === 'Enter') joinRoom(); }}
+                maxLength={6}
+                autoFocus
+                placeholder="······"
+                className="flex-1 bg-black/60 border border-border text-text-bright px-5 py-4 text-xl tracking-[12px] font-display font-black outline-none text-center uppercase focus:border-teal transition-colors"
+                style={{ boxShadow: 'inset 0 0 14px rgba(0,0,0,0.5)' }}
+              />
+              <DecoButton color="teal" size="md" disabled={busy || !connected} onClick={joinRoom} className="sm:min-w-[150px]">
+                入 座
+              </DecoButton>
+            </div>
+          )}
+        </div>
+
+          {error && (
+            <div className="border-t border-b border-blood/60 bg-blood-surface/70 px-6 py-2.5 text-center fade-in shrink-0">
+              <p className="text-blood-glow text-sm tracking-[3px] font-display">{error}</p>
+            </div>
+          )}
+        </div>
       </div>
 
-      {error && (
-        <div className="relative border-t border-b border-blood/60 bg-blood-surface/70 px-6 py-2.5 text-center fade-in">
-          <p className="text-blood-glow text-sm tracking-[3px] font-display">{error}</p>
-        </div>
-      )}
+      {seatOverlay}
     </main>
   );
 }

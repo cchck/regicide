@@ -296,6 +296,57 @@ html, body {
   55% { opacity: 0.55; }
 }
 
+/* === MATCHMAKING CEREMONY ===
+   The house looking for someone to sit opposite you. Deliberately geometric rather than
+   sci-fi: expanding octagons and a slow gold sweep, not a radar blip. */
+
+@keyframes deco-ping {
+  0% { transform: scale(0.35); opacity: 0; }
+  12% { opacity: 0.85; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+.deco-ping {
+  animation: deco-ping 3.2s cubic-bezier(0.16, 0.6, 0.3, 1) infinite;
+}
+
+/* A single arm of light swinging around the empty seat. */
+@keyframes seek-sweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+.seek-sweep {
+  animation: seek-sweep 3.6s linear infinite;
+}
+
+/* The two nameplates arriving hard when a seat is filled. */
+@keyframes plate-in-left {
+  0% { transform: translateX(-70px) skewX(9deg); opacity: 0; }
+  55% { transform: translateX(7px) skewX(-2deg); opacity: 1; }
+  100% { transform: translateX(0) skewX(0); opacity: 1; }
+}
+@keyframes plate-in-right {
+  0% { transform: translateX(70px) skewX(-9deg); opacity: 0; }
+  55% { transform: translateX(-7px) skewX(2deg); opacity: 1; }
+  100% { transform: translateX(0) skewX(0); opacity: 1; }
+}
+.plate-in-left { animation: plate-in-left 0.55s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.plate-in-right { animation: plate-in-right 0.55s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* The lozenge between them stamping down last. */
+@keyframes lozenge-stamp {
+  0% { transform: rotate(45deg) scale(2.4); opacity: 0; }
+  60% { transform: rotate(45deg) scale(0.9); opacity: 1; }
+  100% { transform: rotate(45deg) scale(1); opacity: 1; }
+}
+.lozenge-stamp { animation: lozenge-stamp 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.32s both; }
+
+/* Breathing hairline under the status text while the search runs. */
+@keyframes seek-breathe {
+  0%, 100% { opacity: 0.25; transform: scaleX(0.6); }
+  50% { opacity: 1; transform: scaleX(1); }
+}
+.seek-breathe { animation: seek-breathe 2.4s ease-in-out infinite; }
+
 /* Art deco decorative line */
 .deco-line {
   height: 1px;
