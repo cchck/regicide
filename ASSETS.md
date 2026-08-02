@@ -357,3 +357,78 @@ fused legs, mermaid tail, sitting, crossed arms, T-pose arms raised
 3. `node scripts/optimize-models.mjs`
 4. 接线：桌子/壁灯/藻井分别替换 `Table()` / `FanSconce()` / `Ceiling()` 里的程序化几何，
    并在 `lib/shop.ts` 把对应商品的 `ready` 改成 `true`
+
+---
+
+# 第二批商城模型（2026-08-02）
+
+设置同上：**智能拓扑 + 三角面 + 30000 面 + PBR + GLB**，不绑骨。
+
+**写 prompt 的教训**：Meshy 只认**具体形态**。"ornate / luxurious / decorated" 这类抽象词
+基本无效，必须写出**能被建模的结构**——"a ring of raised brass studs"、"eight scalloped
+lobes"、"upswept lip"。抽象词换来的只是贴图上的花纹，不是几何。
+
+**庄家装束和耳钻暂不做**：庄家带骨骼动画（换模型要重跑绑骨 + 重新解算 `SEAT_FIX` 胯骨偏移），
+耳钻做了针身/机身几何切分（换模型要重新剖面）。这两个是「可能做完接不进去」的，等其余稳定再攻。
+
+---
+
+## ① `table_obsidian` — 黑曜石台（牌桌 ◈900）
+
+> A single round casino card table carved from polished black obsidian, one standalone
+> object. The circular tabletop edge is scalloped into twelve shallow lobes, each lobe
+> rising into a raised lip. A band of protruding polished brass studs runs around the
+> rim below the lip, one stud per lobe. Recessed dark grey suede playing surface inset
+> in the center, ringed by a thin brass channel. The apron beneath the top is carved
+> into deep vertical flutes. Faceted angular obsidian pedestal with sharp planes and
+> brass corner brackets where it meets the tabletop, widening into a stepped hexagonal
+> base with a brass foot ring. Glossy black volcanic glass, cold and severe.
+> Empty tabletop.
+
+**Negative:** `chairs, people, cards, playing cards, poker chips, dice, glasses, bottles, clutter, objects on table, rectangular table, wood, ornate floral carving, smooth plain edge, flat rim, low quality`
+
+## ② `table_jade` — 血玉牌桌（牌桌 ◈2200 · 传世）
+
+> A single round casino card table carved from blood jade, one standalone object.
+> The tabletop rim is sculpted into eight upswept scrolling waves that curl upward like
+> cresting foam, each wave tipped with a gold cap. Between the waves, raised carved
+> dragon-scale panels in relief. A gold cloisonné band inlaid below the rim. Dark green
+> baize inset in the center inside a raised gold ring. Translucent deep red jade shot
+> through with darker crimson veins, subsurface glow, waxy polish. Heavy carved jade
+> pedestal wrapped by a coiling gold dragon, standing on a black lacquer base with gold
+> claw feet. Empty tabletop.
+
+**Negative:** `chairs, people, cards, playing cards, poker chips, dice, glasses, bottles, clutter, objects on table, rectangular table, plastic, bright pink, smooth plain edge, flat rim, low quality`
+
+## ③ `chandelier_skull` — 骨灯（灯具 ◈1000）
+
+> A single hanging chandelier of bone and gold, one standalone object, symmetrical and
+> radially arranged. A ring of pale skulls facing outward, each capped with a small gold
+> crown and a lit candle standing on it, wax running down into the eye sockets. The
+> skulls' jaws and brow ridges are plated with engraved gold. Curved polished brass arms
+> radiate from a central gold hub cast with sunburst rays. Strings of small gold beads
+> and bone finger-bones hang in swags between the arms. A short brass chain and mounting
+> ring at the very top for hanging. Weathered ivory bone against warm gilt brass,
+> dripping wax.
+
+**Negative:** `ceiling, room, walls, floor, background, table, person, body, skeleton figure, standing lamp, floor lamp, cable, wire, plastic, low quality`
+
+## ④ `throne_bone` — 骨王座（座椅 ◈1800 · 传世）
+
+> A single high-backed throne of bone and gold, one standalone object, viewed from the
+> front, symmetrical. Tall fan-shaped backrest of vertical rib bones bound together with
+> gold bands, each rib tipped with a gold finial, and a row of gold-crowned skulls along
+> the top edge. Armrests ending in gilded skulls with gold teeth. Oxblood leather seat
+> cushion held by a gold-studded border. Heavy bone legs sheathed in engraved gold
+> cuffs, standing on gold claw feet. Weathered ivory bone against warm gilt gold,
+> barbaric but regal.
+
+**Negative:** `person, sitting figure, body, skeleton sitting, table, room, floor, background, cushion pile, throne room, plain bone, low quality`
+
+---
+
+**每条 negative 里的针对性排除别删**：
+- 两张桌子排掉 `cards / poker chips / glasses` —— 桌面上任何东西都会和我们已有的 3D 筹码堆打架
+- 两张桌子排掉 `smooth plain edge, flat rim` —— 这批就是为了要边缘起伏，不排掉它会给你一个平边
+- 骨灯排掉 `skeleton figure` —— 否则会得到一具站着的骷髅
+- 骨王座排掉 `person / skeleton sitting` —— 否则椅子上自带一个人
