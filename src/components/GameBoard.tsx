@@ -12,6 +12,7 @@ const RESUME_KEY = 'regicide-resume-v1';
 import { TUTORIAL_SCENES } from '@/lib/tutorial';
 import { audio } from '@/lib/audio';
 import CardArt from './CardArt';
+import type { CardBackId } from '@/lib/cardArt';
 import TableScene, { Quality, DealerAction, FinaleKind, FINALE_TIMINGS, ViewMode } from './TableScene';
 import MatchReport, { useFinaleStage } from './MatchReport';
 import { useQuality } from '@/lib/device';
@@ -1107,7 +1108,8 @@ export default function GameBoard() {
             <div className="relative z-10 flex justify-center gap-1 pt-2 pb-1 pointer-events-none">
               {state.opponentHand.map((_, i) => (
                 <div key={i} className="w-[36px] h-[50px] opacity-40 drop-shadow-[0_2px_6px_rgba(0,0,0,0.8)]" style={dealKey > 0 && state.roundNumber === 1 ? { opacity: 0, animation: `deal-from-top 0.4s cubic-bezier(0.23,1,0.32,1) ${i * 100}ms forwards` } : undefined}>
-                  <CardArt type="back" />
+                  {/* One deck per table, so the opponent's hand wears the back you own */}
+                  <CardArt type={look.cardBack as CardBackId} />
                 </div>
               ))}
             </div>

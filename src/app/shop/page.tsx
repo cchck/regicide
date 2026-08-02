@@ -127,6 +127,12 @@ export default function ShopPage() {
           pot={0}
           quality={quality}
           look={preview}
+          // Nothing is on the felt in this room, which is fine for a table or a chandelier
+          // but makes the card-back slot unbuyable-blind: you'd be paying for art you
+          // cannot see. Deal one face-down card while that slot is open — the same view
+          // the back actually gets in a match, across the table from the opponent.
+          opponentCard={slot === 'cardBack' ? 'citizen' : null}
+          opponentFaceDown={slot === 'cardBack'}
         />
       </div>
 

@@ -86,8 +86,13 @@ export const ITEMS: ShopItem[] = [
 
   // ——— 牌背 ———
   { id: 'cardBack.house', slot: 'cardBack', name: '庄家纹章', blurb: '标准牌背。所有人都是从这副牌开始的。', rarity: 'common', price: 0, ready: true },
-  { id: 'cardBack.gilt', slot: 'cardBack', name: '烫金几何', blurb: '装饰艺术的放射纹，边缘压金。', rarity: 'fine', price: 180, ready: false },
-  { id: 'cardBack.blood', slot: 'cardBack', name: '血手印', blurb: '一枚按在牌背上的掌印。你希望那是印上去的。', rarity: 'rare', price: 600, ready: false },
+  { id: 'cardBack.gilt', slot: 'cardBack', name: '烫金几何', blurb: '装饰艺术的放射纹，从中心炸开，边缘压金。灯扫过时整张牌会亮一下。', rarity: 'fine', price: 180, ready: true },
+  // Renamed from `cardBack.blood` (a handprint that never got made — it relied on the
+  // viewer recognising a hand, which stops working at the size a card back is actually
+  // seen). Safe to change the id: it shipped as ready:false, so no OwnedItem row can
+  // reference it. Repriced from 600 — a card back is only ever seen on the opponent's one
+  // face-down card, which didn't justify costing more than a three-piece prop set.
+  { id: 'cardBack.crown', slot: 'cardBack', name: '倒 冠', blurb: '一顶倒过来的帝冠，被一根钉子从上面贯穿。宝石正在往下掉。', rarity: 'rare', price: 350, ready: true },
 
   // ——— 耳钻 ———
   { id: 'drill.iron', slot: 'drill', name: '锈铁钻', blurb: '出厂那台。锈是真的，声音也是真的。', rarity: 'common', price: 0, ready: true },

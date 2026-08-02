@@ -12,7 +12,8 @@ import { CardType } from '@/lib/types';
 import { useIsTouch } from '@/lib/device';
 import { normalizeLoadout, type Loadout } from '@/lib/shop';
 import { audio } from '@/lib/audio';
-import PlayedCard, { CardMesh } from './Card3D';
+import PlayedCard, { CardMesh, CardBackContext } from './Card3D';
+import type { CardBackId } from '@/lib/cardArt';
 import ChipEconomy from './Chips3D';
 
 type Personality = 'aggressive' | 'cautious' | 'deceptive';
@@ -2358,6 +2359,9 @@ function Scene({
 
   return (
     <FinaleContext.Provider value={finaleRef}>
+      {/* Provided in here, not around the Canvas: R3F runs its own React root, so an outer
+          provider never reaches the cards. Same reason FinaleContext lives at this level. */}
+      <CardBackContext.Provider value={(look.cardBack as CardBackId) ?? 'cardBack.house'}>
       {/* Stamps the shared clock origin — must sit before every finale consumer */}
       <FinaleDirector kind={finale} ctx={finaleRef} />
       {/* Midnight-blue base with warm gold accents — palette from the Dark Deco refs */}
@@ -2507,6 +2511,7 @@ function Scene({
           <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
         </EffectComposer>
       )}
+      </CardBackContext.Provider>
     </FinaleContext.Provider>
   );
 }

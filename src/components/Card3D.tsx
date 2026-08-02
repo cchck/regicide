@@ -1,10 +1,10 @@
 'use client';
 
 import { useFrame } from '@react-three/fiber';
-import { useEffect, useMemo, useRef } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { CardType } from '@/lib/types';
-import { cardSvgDataUrl } from '@/lib/cardArt';
+import { cardSvgDataUrl, cardBackSvgDataUrl, CardBackId } from '@/lib/cardArt';
 
 const CARD_W = 0.72;
 const CARD_H = 1.0;
@@ -31,8 +31,13 @@ function traceRoundedRect(ctx: CanvasRenderingContext2D, w: number, h: number, r
 }
 
 // Card art with rounded-corner alpha, matching the rounded body geometry below.
-function getTexture(type: CardType | 'back'): THREE.CanvasTexture {
-  const cached = textureCache.get(type);
+//
+// The cache key is the full art id, not the card type. It used to be just the type, which
+// was fine while there was exactly one back in existence — the moment backs became
+// purchasable, every variant would have collided on the key `back` and the shop's live
+// preview would have handed back whichever one happened to be rendered first, forever.
+function getTexture(key: string, svgUrl: () => string): THREE.CanvasTexture {
+  const cached = textureCache.get(key);
   if (cached) return cached;
 
   const canvas = document.createElement('canvas');
@@ -54,10 +59,58 @@ function getTexture(type: CardType | 'back'): THREE.CanvasTexture {
     ctx.restore();
     texture.needsUpdate = true;
   };
-  img.src = cardSvgDataUrl(type);
+  img.src = svgUrl();
 
-  textureCache.set(type, texture);
+  textureCache.set(key, texture);
   return texture;
+}
+
+const faceTexture = (type: CardType) => getTexture('face:' + type, () => cardSvgDataUrl(type));
+const backTexture = (id: CardBackId) => getTexture('back:' + id, () => cardBackSvgDataUrl(id));
+
+/**
+ * Which back the player is holding. A context rather than a prop because the cards are
+ * scattered across the scene graph — two played cards plus every card in the hand fan,
+ * which sits several components deep inside the first-person rig.
+ *
+ * It has to be PROVIDED INSIDE the R3F Canvas: react-three-fiber runs its own React root,
+ * so a provider mounted outside it does not reach anything in here.
+ */
+export const CardBackContext = createContext<CardBackId>('cardBack.house');
+
+/**
+ * The surface treatment that comes with each back. This is the part the player is actually
+ * buying — a flat texture swap looks cheap next to the room's 3D props, whereas gilt that
+ * catches the chandelier reads as a different object.
+ *
+ * The edge is the card's extruded body, shared by both faces, so it follows the back.
+ * One material per variant, created once: they stay shared across every card, so this
+ * costs no extra draw calls.
+ */
+interface BackFinish { roughness: number; metalness: number; edge: string }
+
+const BACK_FINISH: Record<CardBackId, BackFinish> = {
+  'cardBack.house': { roughness: 0.45, metalness: 0.05, edge: '#221a28' },
+  // Polished leaf: low roughness, high metalness, so the overhead light rakes across it.
+  'cardBack.gilt': { roughness: 0.24, metalness: 0.58, edge: '#4a3810' },
+  // Gold crown over a matte ground — halfway, so the metal glints without the field shining.
+  'cardBack.crown': { roughness: 0.44, metalness: 0.34, edge: '#3a2a12' },
+};
+
+const edgeMaterials = new Map<CardBackId, THREE.MeshStandardMaterial>();
+function getEdgeMaterial(id: CardBackId): THREE.MeshStandardMaterial {
+  const cached = edgeMaterials.get(id);
+  if (cached) return cached;
+  const finish = BACK_FINISH[id] ?? BACK_FINISH['cardBack.house'];
+  const mat = new THREE.MeshStandardMaterial({
+    color: finish.edge,
+    roughness: 0.55,
+    metalness: 0.2 + finish.metalness * 0.4,
+    emissive: '#140f1c',
+    emissiveIntensity: 0.5,
+  });
+  edgeMaterials.set(id, mat);
+  return mat;
 }
 
 // Rounded-rect extruded body — shared across all cards. The dark edge material covers
@@ -121,14 +174,6 @@ const CARD_FEEL: Record<CardType, CardFeel> = {
   slave: { posRate: 11.0, arc: 0.06, wobble: 0.17, press: 0.02, flashColor: '#ff2a2a', flashPeak: 1.9, flashMs: 140 },
 };
 
-const edgeMaterial = new THREE.MeshStandardMaterial({
-  color: '#221a28',
-  roughness: 0.55,
-  metalness: 0.2,
-  emissive: '#140f1c',
-  emissiveIntensity: 0.5,
-});
-
 // The bare card visual (rounded body + printed faces) — shared by the played-card
 // animation and the first-person hand fan. Orientation is the parent's job.
 const IDLE_EMISSIVE = '#0a0812';
@@ -147,14 +192,18 @@ export function CardMesh({ type, castShadow = true, flash }: {
    */
   flash?: { current: number };
 }) {
+  const backId = useContext(CardBackContext);
+  const finish = BACK_FINISH[backId] ?? BACK_FINISH['cardBack.house'];
+
   const frontMat = useMemo(() => new THREE.MeshStandardMaterial({
-    map: getTexture(type), transparent: true, roughness: 0.45, metalness: 0.05,
+    map: faceTexture(type), transparent: true, roughness: 0.45, metalness: 0.05,
     emissive: IDLE_EMISSIVE, emissiveIntensity: IDLE_EMISSIVE_INTENSITY,
   }), [type]);
   const backMat = useMemo(() => new THREE.MeshStandardMaterial({
-    map: getTexture('back'), transparent: true, roughness: 0.45, metalness: 0.05,
+    map: backTexture(backId), transparent: true,
+    roughness: finish.roughness, metalness: finish.metalness,
     emissive: IDLE_EMISSIVE, emissiveIntensity: IDLE_EMISSIVE_INTENSITY,
-  }), []);
+  }), [backId, finish]);
 
   const feel = CARD_FEEL[type];
   const idleColor = useMemo(() => new THREE.Color(IDLE_EMISSIVE), []);
@@ -191,7 +240,7 @@ export function CardMesh({ type, castShadow = true, flash }: {
   return (
     <group>
       <mesh castShadow={castShadow} receiveShadow geometry={getBodyGeometry()}>
-        <primitive object={edgeMaterial} attach="material" />
+        <primitive object={getEdgeMaterial(backId)} attach="material" />
       </mesh>
       <mesh position={[0, 0, CARD_T / 2 + 0.0012]}>
         <planeGeometry args={[CARD_W, CARD_H]} />
