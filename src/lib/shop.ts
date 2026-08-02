@@ -55,18 +55,18 @@ export const ITEMS: ShopItem[] = [
   // ——— 牌桌 ———
   { id: 'table.plain', slot: 'table', name: '掉漆木桌', blurb: '绿绒磨破了边，烫痕数不清。它见过太多人输光。', rarity: 'common', price: 0, ready: true },
   { id: 'table.deco', slot: 'table', name: '装饰艺术赌桌', blurb: '雕花桌沿，皮革包边，独脚基座撑起整张台面。', rarity: 'fine', price: 350, ready: true },
-  { id: 'table.obsidian', slot: 'table', name: '黑曜石台', blurb: '一整块磨光的黑石。牌落上去没有声音。', rarity: 'rare', price: 900, ready: false },
-  { id: 'table.jade', slot: 'table', name: '血玉牌桌', blurb: '玉里的红丝像凝住的血。据说它记得每一个死在这的人。', rarity: 'legend', price: 2200, ready: false },
+  { id: 'table.obsidian', slot: 'table', name: '黑曜石台', blurb: '一整块磨光的黑石。牌落上去没有声音。', rarity: 'rare', price: 900, ready: true },
+  { id: 'table.jade', slot: 'table', name: '血玉牌桌', blurb: '玉里的红丝像凝住的血。据说它记得每一个死在这的人。', rarity: 'legend', price: 2200, ready: true },
 
   // ——— 灯具 ———
   { id: 'light.bulb', slot: 'light', name: '裸灯泡', blurb: '一根线吊着，风一过就晃。地下赌局的标准配置。', rarity: 'common', price: 0, ready: true },
   { id: 'light.deco', slot: 'light', name: '黄铜吊灯', blurb: '十二支烛台，装饰艺术的黄金骨架。', rarity: 'fine', price: 400, ready: true },
-  { id: 'light.skull', slot: 'light', name: '骨灯', blurb: '烛火从眼窝里透出来。没人问过那是谁的头骨。', rarity: 'rare', price: 1000, ready: false },
+  { id: 'light.skull', slot: 'light', name: '骨灯', blurb: '烛火从眼窝里透出来。没人问过那是谁的头骨。', rarity: 'rare', price: 1000, ready: true },
 
   // ——— 座椅 ———
   { id: 'seat.plain', slot: 'seat', name: '折叠铁椅', blurb: '冷、硬、吱呀作响。坐着的人不在乎。', rarity: 'common', price: 0, ready: true },
   { id: 'seat.throne', slot: 'seat', name: '鎏金王座', blurb: '猩红丝绒配鎏金雕花。他坐上去像在审判你。', rarity: 'fine', price: 400, ready: true },
-  { id: 'seat.bone', slot: 'seat', name: '骨王座', blurb: '用输家的东西堆起来的。别问是什么骨头。', rarity: 'legend', price: 1800, ready: false },
+  { id: 'seat.bone', slot: 'seat', name: '骨王座', blurb: '用输家的东西堆起来的。别问是什么骨头。', rarity: 'legend', price: 1800, ready: true },
 
   // ——— 桌面陈设 ———
   { id: 'props.tin', slot: 'props', name: '铁皮烟灰缸', blurb: '瘪了一角，积着灰。桌上就这么一件东西。', rarity: 'common', price: 0, ready: true },

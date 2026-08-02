@@ -42,6 +42,10 @@ const PLAN = {
   table_deco: { ratio: null, tex: 1024, note: '画面主体，贴图留 1K' },
   sconce_deco: { ratio: null, tex: 512, note: '4 个实例但都在中景，512 够' },
   ceiling_rose: { ratio: null, tex: 512, note: '抬头才看得到' },
+  table_obsidian: { ratio: null, tex: 1024, note: '画面主体' },
+  table_jade: { ratio: null, tex: 1024, note: '画面主体，玉的纹理要留' },
+  chandelier_skull: { ratio: null, tex: 1024, note: '头顶中景，骷髅细节要认得出' },
+  throne_bone: { ratio: null, tex: 1024, note: '庄家身后，中景' },
 };
 
 const mb = (p) => (statSync(p).size / 1e6).toFixed(2) + 'MB';

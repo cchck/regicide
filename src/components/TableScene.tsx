@@ -640,16 +640,20 @@ const tuneChandelier = (m: THREE.MeshStandardMaterial) => {
   m.emissive.set('#f0c070');
   m.emissiveIntensity = 0.28;
 };
-function Chandelier() {
-  const model = useProp('/models/chandelier.glb', tuneChandelier);
+function Chandelier({ url, accent }: { url: string; accent: string }) {
+  const model = useProp(url, tuneChandelier);
   const light = useRef<THREE.PointLight>(null);
   const hotspot = useRef<THREE.Mesh>(null);
   const finale = useContext(FinaleContext);
+  // Hung from its measured underside. CHANDELIER_BOTTOM is the real constraint (below it
+  // the fixture covers the dealer's head), so it's the number the fit is solved against —
+  // swapping in a differently-proportioned model can't break the framing.
+  const fit = useFit(model, { height: 2.09, bottomY: CHANDELIER_BOTTOM });
+  const topY = fit.position[1] + new THREE.Box3().setFromObject(model).max.y * fit.scale[1];
   useFrame(({ clock }) => {
     const f = finale.current;
     if (!f.kind) return;
     const t = finaleElapsed(f, clock.getElapsedTime());
-    // execution: fades with the room. broke: trips like a breaker at 1.6s.
     let mul = 1;
     if (f.kind === 'execution') mul = 1 - Math.min(Math.max((t - 0.3) / 1.0, 0), 1);
     else if (f.kind === 'broke') mul = t > 1.6 ? 0 : 1;
@@ -657,25 +661,32 @@ function Chandelier() {
     if (light.current) light.current.intensity = 1.3 * mul;
     if (hotspot.current) hotspot.current.visible = mul > 0.15;
   });
+  const rodLen = Math.max(CEILING_Y - topY, 0.05);
   return (
-    <group position={[0, CHANDELIER_Y, -0.9]}>
-      {/* Hanging rod up into the dark, from the model's crown to the ceiling */}
-      <mesh position={[0, CHANDELIER_HALF + ROD_LEN / 2, 0]}>
-        <cylinderGeometry args={[0.02, 0.02, ROD_LEN, 8]} />
+    <group position={[0, 0, -0.9]}>
+      {/* Rod from the fixture's crown up into the ceiling, length derived so it always meets */}
+      <mesh position={[0, topY + rodLen / 2, 0]}>
+        <cylinderGeometry args={[0.02, 0.02, rodLen, 8]} />
         <meshStandardMaterial color="#3a2c10" metalness={0.8} roughness={0.4} />
       </mesh>
-      <primitive object={model} scale={CHANDELIER_SCALE} />
-      {/* The bloom hotspot. The model can't emit light, and without a blown-out core
-          the chandelier reads as a gold ornament rather than the thing lighting the room. */}
-      <mesh ref={hotspot}>
+      <primitive object={model} position={fit.position} scale={fit.scale} />
+      {/* The blown-out core. A model can't emit light, and without this the fixture reads
+          as an ornament rather than the thing lighting the room. */}
+      <mesh ref={hotspot} position={[0, CHANDELIER_BOTTOM + 1.0, 0]}>
         <sphereGeometry args={[0.16, 12, 10]} />
-        <meshStandardMaterial color="#ffca70" emissive="#ffb850" emissiveIntensity={2.4} toneMapped={false} />
+        <meshStandardMaterial color={accent} emissive={accent} emissiveIntensity={2.4} toneMapped={false} />
       </mesh>
-      <pointLight ref={light} color="#f0c070" intensity={1.3} distance={7} decay={1.8} position={[0, 0.2, 0]} />
+      <pointLight ref={light} color={accent} intensity={1.3} distance={7} decay={1.8} position={[0, CHANDELIER_BOTTOM + 1.2, 0]} />
     </group>
   );
 }
 useGLTF.preload('/models/chandelier.glb');
+useGLTF.preload('/models/chandelier_skull.glb');
+
+const LIGHT_MODEL: Record<string, { url: string; accent: string }> = {
+  'light.deco': { url: '/models/chandelier.glb', accent: '#ffb850' },
+  'light.skull': { url: '/models/chandelier_skull.glb', accent: '#ffd08a' },
+};
 
 // ————————————————————————————— The room —————————————————————————————
 // A sealed private gambling den: midnight-blue walls, deep-red pilasters, gold fan
@@ -1261,43 +1272,77 @@ function Railing() {
 // (1.9 wide × 1.24 tall); our table is 5.1 across but only 1.39 from floor to felt.
 // Scaling uniformly to the right radius would make it 3.3 units tall — a podium. The
 // squash is invisible from a seated camera looking down at the surface.
+// Fit a Meshy prop into the scene from its ACTUAL loaded bounds. Every model here is
+// meshopt-quantized, so its real extent is (normalized ints × a node scale) — a constant
+// measured offline is a different number, and that mismatch is exactly what once left the
+// Deco table floating above its own felt. Box3 sees whatever really got loaded.
+//
+// `parentY` is the Y of the group this will be mounted in, so the returned position can be
+// group-relative (the other half of that same bug).
+function useFit(model: THREE.Object3D, opts: {
+  radius?: number;      // target XZ radius; omit to scale by height alone
+  bottomY?: number;     // world Y its underside should rest on
+  topY?: number;        // world Y its top should reach
+  height?: number;      // explicit world height, when not derived from bottom+top
+  parentY?: number;
+  parentZ?: number;
+  centreZ?: boolean;    // also centre it in Z (props that must sit on the table axis)
+}) {
+  return useMemo(() => {
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const centre = box.getCenter(new THREE.Vector3());
+    const py = opts.parentY ?? 0;
+
+    const wantH = opts.height ?? (opts.topY !== undefined && opts.bottomY !== undefined ? opts.topY - opts.bottomY : undefined);
+    const scaleY = wantH !== undefined ? wantH / size.y : 1;
+    const scaleXZ = opts.radius !== undefined ? opts.radius / (Math.max(size.x, size.z) / 2) : scaleY;
+
+    const baseY = opts.bottomY !== undefined
+      ? opts.bottomY - box.min.y * scaleY
+      : (opts.topY ?? 0) - box.max.y * scaleY;
+
+    return {
+      scale: [scaleXZ, scaleY, scaleXZ] as [number, number, number],
+      position: [
+        -centre.x * scaleXZ,
+        baseY - py,
+        opts.centreZ ? -centre.z * scaleXZ : -(opts.parentZ ?? 0) * 0,
+      ] as [number, number, number],
+    };
+  }, [model, opts.radius, opts.bottomY, opts.topY, opts.height, opts.parentY, opts.parentZ, opts.centreZ]);
+}
+
 const tuneDecoTable = (m: THREE.MeshStandardMaterial) => {
   m.roughness = 0.5;
   m.metalness = 0.35;
   m.emissive.set('#0d0d16');
   m.emissiveIntensity = 0.3;
 };
-function DecoTableBody() {
-  const model = useProp('/models/table_deco.glb', tuneDecoTable);
-  // Measured at runtime rather than from offline numbers. The shipped GLB is meshopt-
-  // quantized, so its real extent is (normalized ints × a node scale) — a constant copied
-  // from the raw file is a different number, and every such constant is one silent
-  // mismatch away from a floating table. Box3 sees whatever actually got loaded.
-  const fit = useMemo(() => {
-    const box = new THREE.Box3().setFromObject(model);
-    const size = box.getSize(new THREE.Vector3());
-    const centre = box.getCenter(new THREE.Vector3());
-    const radius = Math.max(size.x, size.z) / 2;
-    // Non-uniform on purpose: Meshy proportions this like a small café table (1.9 wide ×
-    // 1.24 tall) while ours is 5.1 across but only 1.39 from floor to felt. Matching the
-    // radius uniformly would stand it 3.3 units tall — a podium.
-    const scaleXZ = TABLE_R_TOP / radius;
-    const scaleY = (TABLE_SURFACE_Y - FLOOR_Y) / size.y;
-    // These coordinates are RELATIVE to the table group (which already sits at
-    // TABLE_GROUP_POS) — the bug this replaced fed it world coordinates from inside that
-    // group, so the table rendered a full group-height too high.
-    return {
-      scale: [scaleXZ, scaleY, scaleXZ] as [number, number, number],
-      position: [
-        -centre.x * scaleXZ,
-        FLOOR_Y - TABLE_GROUP_POS[1] - box.min.y * scaleY,
-        -centre.z * scaleXZ,
-      ] as [number, number, number],
-    };
-  }, [model]);
+// Non-uniform on purpose: Meshy proportions these like small café tables (~1.9 wide ×
+// 1.24 tall) while ours is 5.1 across but only 1.39 from floor to felt. Matching the
+// radius uniformly would stand one 3.3 units tall — a podium.
+function TableBody({ url }: { url: string }) {
+  const model = useProp(url, tuneDecoTable);
+  const fit = useFit(model, {
+    radius: TABLE_R_TOP,
+    bottomY: FLOOR_Y,
+    topY: TABLE_SURFACE_Y,
+    parentY: TABLE_GROUP_POS[1],
+    centreZ: true,
+  });
   return <primitive object={model} position={fit.position} scale={fit.scale} />;
 }
 useGLTF.preload('/models/table_deco.glb');
+useGLTF.preload('/models/table_obsidian.glb');
+useGLTF.preload('/models/table_jade.glb');
+
+// Which GLB each paid table uses. The plain default stays procedural.
+const TABLE_MODEL: Record<string, string> = {
+  'table.deco': '/models/table_deco.glb',
+  'table.obsidian': '/models/table_obsidian.glb',
+  'table.jade': '/models/table_jade.glb',
+};
 
 // The model's flat, wide side is at -Z and it narrows toward +Z, which matches the
 // procedural sconce's convention: +Z points out of the wall.
@@ -1358,7 +1403,7 @@ function Table({ variant }: { variant: string }) {
   const ringColor = '#d4a838';
   return (
     <group position={TABLE_GROUP_POS}>
-      {variant === 'table.deco' ? <DecoTableBody /> : (
+      {TABLE_MODEL[variant] ? <TableBody url={TABLE_MODEL[variant]} /> : (
       <>
       {/* Lacquered wood slab — real grain under a clearcoat polish */}
       <mesh castShadow receiveShadow>
@@ -1392,7 +1437,7 @@ function Table({ variant }: { variant: string }) {
       {/* Felt playing surface — carpet-pile normals read as brushed felt up close.
           The Deco table brings its own green baize, so ours would just hide the upgrade;
           the gold rings below it stay either way, because they're table markings. */}
-      {variant !== 'table.deco' && (
+      {!TABLE_MODEL[variant] && (
       <mesh receiveShadow position={[0, TABLE_HEIGHT / 2 + 0.006, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <circleGeometry args={[2.34, 96]} />
         <meshStandardMaterial
@@ -2091,38 +2136,36 @@ function VolumetricBeam({ position, radiusTop, radiusBottom, height, color, opac
 
 
 // The dealer's throne. Sits behind him; the table hides everything below the seat.
-function Chair() {
-  const { scene } = useGLTF('/models/chair.glb');
-  const model = useMemo(() => {
-    const root = scene.clone(true);
-    root.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      mesh.castShadow = true;
-      const src = mesh.material as THREE.MeshStandardMaterial;
-      mesh.material = src.clone();
-      const mat = mesh.material as THREE.MeshStandardMaterial;
-      mat.roughness = 0.85;
-      mat.metalness = 0.15;
-      mat.emissive.set('#0a0a12');
-      mat.emissiveIntensity = 0.3;
-    });
-    return root;
-  }, [scene]);
+const tuneSeat = (m: THREE.MeshStandardMaterial) => {
+  m.roughness = 0.85;
+  m.metalness = 0.15;
+  m.emissive.set('#0a0a12');
+  m.emissiveIntensity = 0.3;
+};
 
-  // Solved against the real animation data rather than guessed: Chair_Sit_Idle_M puts
-  // his hips at model y=0.74, z=-0.34, i.e. world y=0.82, z=-3.08 — comfortably beyond
-  // the table's far edge (-2.85). The chair is scaled so its seat meets that hip height
-  // while its feet still reach the floor, which makes it a genuine throne.
-  const scale = 1.9;
+// Solved against the real animation data rather than guessed: Chair_Sit_Idle_M puts his
+// hips at model y=0.74, z=-0.34 — world y=0.82, z=-3.08, comfortably beyond the table's
+// far edge (-2.85). Both thrones are fitted to the same total height so a swap can't
+// change where he appears to be sitting; feet land on the floor either way.
+const THRONE_HEIGHT = 3.61;
+
+function Chair({ url }: { url: string }) {
+  const model = useProp(url, tuneSeat);
   const hipZ = DEALER_POS[2] - 0.34 * DEALER_SCALE;
+  const fit = useFit(model, { height: THRONE_HEIGHT, bottomY: FLOOR_Y });
   return (
-    <group position={[DEALER_POS[0], FLOOR_Y + 0.95 * scale, hipZ]} scale={scale}>
-      <primitive object={model} />
+    <group position={[DEALER_POS[0], 0, hipZ]}>
+      <primitive object={model} position={fit.position} scale={fit.scale} />
     </group>
   );
 }
 useGLTF.preload('/models/chair.glb');
+useGLTF.preload('/models/throne_bone.glb');
+
+const SEAT_MODEL: Record<string, string> = {
+  'seat.throne': '/models/chair.glb',
+  'seat.bone': '/models/throne_bone.glb',
+};
 
 // ————————————————————————————— Scene —————————————————————————————
 
@@ -2244,7 +2287,9 @@ function Scene({
         </>
       )}
       <Railing />
-      {look.light === 'light.deco' ? <Chandelier /> : <BareBulb />}
+      {LIGHT_MODEL[look.light]
+        ? <Chandelier url={LIGHT_MODEL[look.light].url} accent={LIGHT_MODEL[look.light].accent} />
+        : <BareBulb />}
       <Floor reflective={preset.reflectiveFloor} />
       <Carpet />
 
@@ -2267,7 +2312,9 @@ function Scene({
       {look.props === 'props.vice'
         ? TABLE_PROPS.map((p) => <TableProp key={p.url} {...p} />)
         : <TinAshtray />}
-      {showOpponent && (look.seat === 'seat.throne' ? <Chair /> : <PlainChair />)}
+      {showOpponent && (SEAT_MODEL[look.seat]
+        ? <Chair url={SEAT_MODEL[look.seat]} />
+        : <PlainChair />)}
       {showOpponent && !desertedGone && (
         <OpponentFigure
           personality={personality}
