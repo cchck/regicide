@@ -1960,8 +1960,44 @@ const VICE_PROPS: PropDef[] = [
   },
 ];
 
+// 抵押物 — what people put up to keep playing. Placed by solving for clearance rather
+// than reusing the vice set's anchors: these are 16–20cm personal effects, not a 30cm
+// ashtray, and the solver was constrained to the far half because anything at +z sits
+// between the camera and the felt, behind the card fan.
+// Verified: ≥0.55 from the nearest busy zone (played cards, chip piles, pot, dealer's
+// hands), ≥0.40 inside the 2.55 rim, ≥0.65 between pieces.
+const COLLATERAL_PROPS: PropDef[] = [
+  {
+    // 20cm pewter dish; the model is a flat tray so it barely rises off the felt
+    url: '/models/prop_ring.glb',
+    scale: (0.20 * M) / 1.91,
+    minY: -0.288,
+    at: [-1.55, -0.86],
+    spin: 0.4,
+    tune: (m) => { m.roughness = 0.42; m.metalness = 0.65; },
+  },
+  {
+    // 16cm across, but 22cm tall once the brass spike is counted
+    url: '/models/prop_ticket.glb',
+    scale: (0.16 * M) / 1.41,
+    minY: -0.953,
+    at: [-1.14, -1.76],
+    spin: -0.55,
+    tune: (m) => { m.roughness = 0.9; m.metalness = 0.05; },
+  },
+  {
+    url: '/models/prop_teeth.glb',
+    scale: (0.16 * M) / 1.69,
+    minY: -0.953,
+    at: [1.92, -0.85],
+    spin: -0.35,
+    tune: (m) => { m.roughness = 0.6; m.metalness = 0.3; },
+  },
+];
+
 const PROP_SETS: Record<string, PropDef[]> = {
   'props.vice': VICE_PROPS,
+  'props.collateral': COLLATERAL_PROPS,
 };
 
 function TableProp({ url, scale, minY, at, spin, tune, smokeTip }: PropDef) {
