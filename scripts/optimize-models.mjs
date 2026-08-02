@@ -37,6 +37,11 @@ const PLAN = {
   cigar: { ratio: 0.02, error: 0.02, tex: 512, note: '99 万面的烟灰缸，桌上只有 5cm' },
   cash: { ratio: 0.015, error: 0.02, tex: 512, note: '154 万面。整个项目最重的一个，而它只是桌上一摞钱' },
   whiskey: { ratio: 0.03, error: 0.015, tex: 512, note: '67 万面。玻璃靠反射不靠面数' },
+
+  // 智能拓扑生成的，本来就只有 5k 面 —— 不用减面，体积全在贴图上。
+  table_deco: { ratio: null, tex: 1024, note: '画面主体，贴图留 1K' },
+  sconce_deco: { ratio: null, tex: 512, note: '4 个实例但都在中景，512 够' },
+  ceiling_rose: { ratio: null, tex: 512, note: '抬头才看得到' },
 };
 
 const mb = (p) => (statSync(p).size / 1e6).toFixed(2) + 'MB';

@@ -805,7 +805,7 @@ function ArchWindow({ position, rotationY }: { position: [number, number, number
   );
 }
 
-function Room({ sconceLights }: { sconceLights: boolean }) {
+function Room({ sconceLights, decoSconce }: { sconceLights: boolean; decoSconce: boolean }) {
   const wallH = WALL_H;
   const wallY = wallH / 2 + FLOOR_Y;
   return (
@@ -853,7 +853,9 @@ function Room({ sconceLights }: { sconceLights: boolean }) {
               <meshStandardMaterial color="#8a6a20" emissive="#8a6a20" emissiveIntensity={0.6} roughness={0.4} />
             </mesh>
             {/* Only the pilasters near the table carry real lights — the rest just glow */}
-            <FanSconce position={[side * -0.38, 3.2, 0]} rotationY={side * -Math.PI / 2} withLight={sconceLights && z === -1.5} />
+            {decoSconce
+              ? <DecoSconce position={[side * -0.38, 3.2, 0]} rotationY={side * -Math.PI / 2} withLight={sconceLights && z === -1.5} />
+              : <FanSconce position={[side * -0.38, 3.2, 0]} rotationY={side * -Math.PI / 2} withLight={sconceLights && z === -1.5} />}
           </group>
         )),
       )}
@@ -872,8 +874,9 @@ function Room({ sconceLights }: { sconceLights: boolean }) {
           <boxGeometry args={[0.06, 4.1, 0.06]} />
           <meshStandardMaterial color="#8a6a20" metalness={0.85} roughness={0.35} emissive="#4a3810" emissiveIntensity={0.5} />
         </mesh>
-        <FanSconce position={[-1.9, 3.0, -0.25]} rotationY={0} withLight={sconceLights} />
-        <FanSconce position={[1.9, 3.0, -0.25]} rotationY={0} withLight={sconceLights} />
+        {([-1.9, 1.9] as const).map((x) => (decoSconce
+          ? <DecoSconce key={x} position={[x, 3.0, -0.25]} rotationY={0} withLight={sconceLights} />
+          : <FanSconce key={x} position={[x, 3.0, -0.25]} rotationY={0} withLight={sconceLights} />))}
       </group>
     </group>
   );
@@ -1245,12 +1248,104 @@ function Railing() {
   );
 }
 
-function Table() {
+// ————————————————————————— Bought upgrades —————————————————————————
+// Meshy normalises every export into a ~1.9 box, so these are all placed from measured
+// bbox numbers rather than eyeballed scales (see ASSETS.md).
+
+// The Deco table replaces the BODY only — slab, pedestal and base. The felt and the gold
+// betting rings stay procedural on top of it, because they're where cards and chips are
+// positioned and their radii are load-bearing. What you gain is the carved rim and the
+// real pedestal showing around and beneath them.
+//
+// Scaled non-uniformly on purpose. The model is proportioned like a small café table
+// (1.9 wide × 1.24 tall); our table is 5.1 across but only 1.39 from floor to felt.
+// Scaling uniformly to the right radius would make it 3.3 units tall — a podium. The
+// squash is invisible from a seated camera looking down at the surface.
+const DECO_TABLE = {
+  // measured off _raw/table_deco.glb: top +0.624, bottom -0.620, tabletop radius 0.959
+  scaleXZ: TABLE_R_TOP / 0.959,
+  scaleY: (TABLE_SURFACE_Y - FLOOR_Y) / 1.244,
+  minY: -0.620,
+};
+const tuneDecoTable = (m: THREE.MeshStandardMaterial) => {
+  m.roughness = 0.5;
+  m.metalness = 0.35;
+  m.emissive.set('#0d0d16');
+  m.emissiveIntensity = 0.3;
+};
+function DecoTableBody() {
+  const model = useProp('/models/table_deco.glb', tuneDecoTable);
+  return (
+    <primitive
+      object={model}
+      position={[TABLE_GROUP_POS[0], FLOOR_Y - DECO_TABLE.minY * DECO_TABLE.scaleY, TABLE_GROUP_POS[2]]}
+      scale={[DECO_TABLE.scaleXZ, DECO_TABLE.scaleY, DECO_TABLE.scaleXZ]}
+    />
+  );
+}
+useGLTF.preload('/models/table_deco.glb');
+
+// The model's flat, wide side is at -Z and it narrows toward +Z, which matches the
+// procedural sconce's convention: +Z points out of the wall.
+const tuneSconce = (m: THREE.MeshStandardMaterial) => {
+  m.roughness = 0.35;
+  m.metalness = 0.85;
+  m.emissive.set('#e8c060');
+  m.emissiveIntensity = 0.5;
+};
+function DecoSconce({ position, rotationY, withLight }: {
+  position: [number, number, number]; rotationY: number; withLight: boolean;
+}) {
+  const model = useProp('/models/sconce_deco.glb', tuneSconce);
+  const light = useRef<THREE.PointLight>(null);
+  const finale = useContext(FinaleContext);
+  useFrame(({ clock }) => {
+    const f = finale.current;
+    if (!f.kind || !light.current) return;
+    const t = finaleElapsed(f, clock.getElapsedTime());
+    if (f.kind === 'execution') light.current.intensity = 0.9 * (1 - Math.min(Math.max((t - 0.3) / 1.0, 0), 1));
+    else if (f.kind === 'broke') light.current.intensity = t > 1.0 ? 0 : 0.9;
+  });
+  return (
+    <group position={position} rotation={[0, rotationY, 0]}>
+      {/* 1.906 tall in the box → 0.42 puts it at 0.8 units ≈ 43cm, a real sconce */}
+      <primitive object={model} scale={0.42} />
+      {withLight && <pointLight ref={light} color="#e8c060" intensity={0.9} distance={4.5} decay={2} position={[0, 0.1, 0.35]} />}
+    </group>
+  );
+}
+useGLTF.preload('/models/sconce_deco.glb');
+
+// A rosette around the chandelier's mount. The disc lies in the model's XY plane with Z
+// as depth, so rotateX(+90°) sends its face (+Z) to -Y — pointing down at the room.
+const tuneRose = (m: THREE.MeshStandardMaterial) => {
+  m.roughness = 0.45;
+  m.metalness = 0.8;
+  m.emissive.set('#3a2c10');
+  m.emissiveIntensity = 0.45;
+};
+function CeilingRose() {
+  const model = useProp('/models/ceiling_rose.glb', tuneRose);
+  const scale = 1.5; // 1.898 across → 2.85 units ≈ 1.5m, in scale with a 7-unit ceiling
+  return (
+    <primitive
+      object={model}
+      position={[0, CEILING_Y - 0.19 * scale, -0.9]}
+      rotation={[Math.PI / 2, 0, 0]}
+      scale={scale}
+    />
+  );
+}
+useGLTF.preload('/models/ceiling_rose.glb');
+
+function Table({ variant }: { variant: string }) {
   const wood = usePbr('dark_wood', 3, 3);
   const felt = usePbr('dirty_carpet', 6, 6);
   const ringColor = '#d4a838';
   return (
     <group position={TABLE_GROUP_POS}>
+      {variant === 'table.deco' ? <DecoTableBody /> : (
+      <>
       {/* Lacquered wood slab — real grain under a clearcoat polish */}
       <mesh castShadow receiveShadow>
         <cylinderGeometry args={[TABLE_R_TOP, TABLE_R_BOTTOM, TABLE_HEIGHT, 96]} />
@@ -1277,6 +1372,8 @@ function Table() {
         <cylinderGeometry args={[1.25, 1.45, 0.1, 64]} />
         <meshStandardMaterial color="#14141d" roughness={0.45} metalness={0.4} emissive="#0a0a12" emissiveIntensity={0.4} />
       </mesh>
+      </>
+      )}
 
       {/* Felt playing surface — carpet-pile normals read as brushed felt up close */}
       <mesh receiveShadow position={[0, TABLE_HEIGHT / 2 + 0.006, 0]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -2111,7 +2208,7 @@ function Scene({
       </Environment>
 
       <DustMotes count={preset.dust} />
-      <Room sconceLights={quality !== 'low'} />
+      <Room sconceLights={quality !== 'low'} decoSconce={look.room === 'room.deco'} />
       <Ceiling />
       {/* Light cones: one under the chandelier, one broad wash over the table */}
       {/* Hangs off the chandelier, so its top tracks CHANDELIER_Y down to the table */}
@@ -2121,6 +2218,7 @@ function Scene({
           account still gets a coherent room without any of the bought art. */}
       {look.room === 'room.deco' && (
         <>
+          <CeilingRose />
           <DistantColumns />
           <Drapes />
           <RoyalBanner x={-1.95} />
@@ -2147,7 +2245,7 @@ function Scene({
         matchPoint={playerSetsWon >= 3}
         role="dealer"
       />
-      <Table />
+      <Table variant={look.table} />
       {look.props === 'props.vice'
         ? TABLE_PROPS.map((p) => <TableProp key={p.url} {...p} />)
         : <TinAshtray />}

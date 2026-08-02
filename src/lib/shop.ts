@@ -54,7 +54,7 @@ export interface ShopItem {
 export const ITEMS: ShopItem[] = [
   // ——— 牌桌 ———
   { id: 'table.plain', slot: 'table', name: '掉漆木桌', blurb: '绿绒磨破了边，烫痕数不清。它见过太多人输光。', rarity: 'common', price: 0, ready: true },
-  { id: 'table.deco', slot: 'table', name: '装饰艺术赌桌', blurb: '雕花桌沿，皮革包边，内嵌一圈金线。', rarity: 'fine', price: 350, ready: false },
+  { id: 'table.deco', slot: 'table', name: '装饰艺术赌桌', blurb: '雕花桌沿，皮革包边，独脚基座撑起整张台面。', rarity: 'fine', price: 350, ready: true },
   { id: 'table.obsidian', slot: 'table', name: '黑曜石台', blurb: '一整块磨光的黑石。牌落上去没有声音。', rarity: 'rare', price: 900, ready: false },
   { id: 'table.jade', slot: 'table', name: '血玉牌桌', blurb: '玉里的红丝像凝住的血。据说它记得每一个死在这的人。', rarity: 'legend', price: 2200, ready: false },
 
