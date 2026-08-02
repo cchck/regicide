@@ -47,6 +47,12 @@ const PLAN = {
   prop_ring: { ratio: null, tex: 512, note: '婚戒与怀表' },
   prop_ticket: { ratio: null, tex: 512, note: '当票与火漆' },
   prop_teeth: { ratio: null, tex: 512, note: '义眼与金牙' },
+  // 东方局 —— 智能拓扑生成的，面数本来就低（5k/5k/8.7k），体积全在 4 张 2048 贴图上。
+  // 几何已由 scripts/fix-eastern-props.mjs 预先修正过（铜钱躺平、香炉去碎片）。
+  prop_teapot: { ratio: null, tex: 512, note: '紫砂壶与杯，桌上 14cm' },
+  prop_coins: { ratio: null, tex: 512, note: '铜钱串，桌上 18cm' },
+  prop_incense: { ratio: null, tex: 512, note: '铜香炉，桌上 12cm' },
+
   table_obsidian: { ratio: null, tex: 1024, note: '画面主体' },
   table_jade: { ratio: null, tex: 1024, note: '画面主体，玉的纹理要留' },
   chandelier_skull: { ratio: null, tex: 1024, note: '头顶中景，骷髅细节要认得出' },

@@ -1910,6 +1910,18 @@ type PropDef = {
   tune: (m: THREE.MeshStandardMaterial) => void;
   /** Optional local-space point where smoke should be born. */
   smokeTip?: [number, number, number];
+  /**
+   * Two upright incense sticks, drawn procedurally rather than modelled.
+   *
+   * Meshy's censer shipped its sticks as a detached lump floating off in one corner
+   * (Y ∈ [0.46, 0.93], 342 verts at X[0.34,0.48] Z[0.36,0.46], with six empty slices
+   * between it and the bowl). That got cropped in scripts/fix-eastern-props.mjs. Two
+   * cylinders cost nothing, sit where they actually belong, and hand us an exact ember
+   * position for the smoke to rise from.
+   *
+   * `baseY` is model-space (the ash bed); `height` is in world units above it.
+   */
+  sticks?: { baseY: number; height: number };
 };
 
 // Prop sets, keyed by shop item. Each set reuses the same three anchor points on the
@@ -1995,23 +2007,68 @@ const COLLATERAL_PROPS: PropDef[] = [
   },
 ];
 
+// 东方局 — the same vices, different implements. Sizes and minY were measured off the
+// GLBs after scripts/fix-eastern-props.mjs corrected them; the three positions are the
+// collateral set's, reused deliberately (these are 16–22cm pieces, same class as the
+// 16–20cm effects that audit was run against, so the clearances carry over).
+const EASTERN_PROPS: PropDef[] = [
+  {
+    // Yixing teapot, cup and tray. 22cm is the TRAY — the pot alone is ~14cm, but the
+    // model's 1.906 span is the whole arrangement, so the tray is what sets the scale.
+    url: '/models/prop_teapot.glb',
+    scale: (0.22 * M) / 1.906,
+    minY: -0.566,
+    at: [-1.55, -0.86],
+    spin: 0.5,
+    tune: (m) => { m.roughness = 0.88; m.metalness = 0.05; }, // unglazed clay: matte, stony
+  },
+  {
+    // Coiled string of coins. Arrived standing upright like a signboard (Z was its
+    // thinnest axis at ±0.20 while Y ran ±0.95); laid flat offline, so its long axis is
+    // now Z at 1.906.
+    url: '/models/prop_coins.glb',
+    scale: (0.18 * M) / 1.906,
+    minY: -0.202,
+    at: [1.92, -0.85],
+    spin: -0.4,
+    tune: (m) => { m.roughness = 0.55; m.metalness = 0.7; }, // patinated bronze
+  },
+  {
+    // Bronze censer, 16cm across the loop handles. Squat after the crop (0.744 tall),
+    // which is right — it's a bowl, and the sticks are ours.
+    url: '/models/prop_incense.glb',
+    scale: (0.16 * M) / 1.906,
+    minY: -0.926,
+    at: [-1.14, -1.76],
+    spin: 0.3,
+    tune: (m) => { m.roughness = 0.5; m.metalness = 0.75; },
+    sticks: { baseY: -0.30, height: 0.26 }, // ash bed → ~14cm of stick above it
+  },
+];
+
 const PROP_SETS: Record<string, PropDef[]> = {
   'props.vice': VICE_PROPS,
   'props.collateral': COLLATERAL_PROPS,
+  'props.eastern': EASTERN_PROPS,
 };
 
-function TableProp({ url, scale, minY, at, spin, tune, smokeTip }: PropDef) {
+function TableProp({ url, scale, minY, at, spin, tune, smokeTip, sticks }: PropDef) {
   const model = useProp(url, tune);
   // The prop stands at (at.x, table_surface + how far minY dips below the origin, at.z),
   // spun by `spin` about Y. Compute the smoke source in world space so the smoke plume
   // itself lives at world scale — otherwise a 0.15-scale prop would shrink the plume
   // to the size of a match head.
   const c = Math.cos(spin), s = Math.sin(spin);
-  const tipWorld = smokeTip ? [
-    at[0] + scale * (c * smokeTip[0] + s * smokeTip[2]),
-    TABLE_SURFACE_Y + scale * (smokeTip[1] - minY),
-    at[1] + scale * (-s * smokeTip[0] + c * smokeTip[2]),
-  ] as [number, number, number] : null;
+  // The ash bed sits on the prop's own axis, so `spin` doesn't move it in XZ.
+  const ashY = sticks ? TABLE_SURFACE_Y + scale * (sticks.baseY - minY) : 0;
+  const tipWorld = sticks
+    // Smoke comes off the embers, which are ours and not in model space at all.
+    ? [at[0], ashY + sticks.height, at[1]] as [number, number, number]
+    : smokeTip ? [
+        at[0] + scale * (c * smokeTip[0] + s * smokeTip[2]),
+        TABLE_SURFACE_Y + scale * (smokeTip[1] - minY),
+        at[1] + scale * (-s * smokeTip[0] + c * smokeTip[2]),
+      ] as [number, number, number] : null;
   return (
     <>
       <primitive
@@ -2020,6 +2077,25 @@ function TableProp({ url, scale, minY, at, spin, tune, smokeTip }: PropDef) {
         scale={scale}
         rotation={[0, spin, 0]}
       />
+      {sticks && (
+        <group position={[at[0], ashY, at[1]]}>
+          {[-1, 1].map((side) => (
+            // Leaned apart a couple of degrees each way — two perfectly parallel sticks
+            // read as a machined object rather than something a hand pushed into ash.
+            <group key={side} position={[side * 0.017, 0, side * 0.011]} rotation={[side * 0.06, 0, side * -0.09]}>
+              <mesh position={[0, sticks.height / 2, 0]} castShadow>
+                <cylinderGeometry args={[0.0035, 0.0035, sticks.height, 5]} />
+                <meshStandardMaterial color="#4a3524" roughness={0.95} metalness={0} />
+              </mesh>
+              {/* The ember. toneMapped off so it stays a hot point in a very dark room. */}
+              <mesh position={[0, sticks.height, 0]}>
+                <sphereGeometry args={[0.0075, 8, 6]} />
+                <meshStandardMaterial color="#ff7a2a" emissive="#ff4400" emissiveIntensity={4} toneMapped={false} />
+              </mesh>
+            </group>
+          ))}
+        </group>
+      )}
       {tipWorld && <Smoke at={tipWorld} />}
     </>
   );

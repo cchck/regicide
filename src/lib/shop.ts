@@ -72,6 +72,7 @@ export const ITEMS: ShopItem[] = [
   { id: 'props.tin', slot: 'props', name: '铁皮烟灰缸', blurb: '瘪了一角，积着灰。桌上就这么一件东西。', rarity: 'common', price: 0, ready: true },
   { id: 'props.vice', slot: 'props', name: '绅士的恶习', blurb: '燃着的雪茄、水晶醒酒器、一捆扎好的钞票——一整套派头。', rarity: 'fine', price: 300, ready: true },
   { id: 'props.collateral', slot: 'props', name: '抵 押 物', blurb: '婚戒压在锡碟里，当票扎在铜签上，绒盒里躺着三颗金牙和一只义眼。都是别人留下的。', rarity: 'rare', price: 550, ready: true },
+  { id: 'props.eastern', slot: 'props', name: '东 方 局', blurb: '紫砂壶温着，铜钱串搁在手边，香炉里两支香烧到一半。同样的恶习，另一套器物。', rarity: 'rare', price: 550, ready: true },
 
   // ——— 房间 ———
   { id: 'room.concrete', slot: 'room', name: '水泥地下室', blurb: '裸墙，霉斑，一扇焊死的窗。没人会来找你。', rarity: 'common', price: 0, ready: true },

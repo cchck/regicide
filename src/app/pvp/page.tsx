@@ -94,6 +94,10 @@ export default function PvpPage() {
   // ————— Quick match —————
   // `seatPhase` drives the ceremony overlay; `houseTimer` is the give-up clock that seats
   // the house when the queue turns up nobody.
+  // The PvP server is unreachable (not running locally, or down in production). This must
+  // NOT take the whole game with it: the AI opponent runs entirely in the browser, so a
+  // dead socket should cost you real opponents and nothing else.
+  const [pvpDown, setPvpDown] = useState(false);
   const [seatPhase, setSeatPhase] = useState<SeatPhase | null>(null);
   const [seatOpp, setSeatOpp] = useState<{ name: string; isHouse: boolean } | null>(null);
   const houseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,6 +149,7 @@ export default function PvpPage() {
         socketRef.current = socket;
         socket.on('connect', () => {
           setConnected(true);
+          setPvpDown(false);
 
           // Arrived via a share link — take the seat straight away. Consumed once, so a
           // later reconnect doesn't try to re-join a room we've already left.
@@ -172,7 +177,12 @@ export default function PvpPage() {
           });
         });
         socket.on('disconnect', () => setConnected(false));
-        socket.on('connect_error', (err) => setError(err.message || '无法连接对战服务器'));
+        socket.on('connect_error', () => {
+          // Deliberately not surfaced as an error banner — you can still play, just not
+          // against people. The lobby explains it in place instead.
+          setConnected(false);
+          setPvpDown(true);
+        });
         socket.on('opponent-emote', (name: Emote) => {
           const action = EMOTE_ACTION[name];
           if (!action) return;
@@ -199,7 +209,7 @@ export default function PvpPage() {
           setStage('playing');
         });
       })
-      .catch((err) => setError(err instanceof Error ? err.message : '连接失败'));
+      .catch(() => setPvpDown(true)); // ticket fetch or handshake failed — same story
 
     return () => {
       cancelled = true;
@@ -208,6 +218,19 @@ export default function PvpPage() {
       if (emoteTimer.current) clearTimeout(emoteTimer.current);
     };
   }, [status]);
+
+  // Decide "down" rather than waiting forever on it.
+  //
+  // A refused connection reports back instantly, but a dropped packet (firewall, dead
+  // host) leaves socket.io retrying for ~20s with no error. Without a bound, the seat
+  // button would sit disabled that whole time on a page whose main action doesn't even
+  // need the socket. 3.5s is longer than any real handshake and short enough not to read
+  // as a hang.
+  useEffect(() => {
+    if (stage !== 'lobby' || connected || pvpDown) return;
+    const t = setTimeout(() => setPvpDown(true), 3500);
+    return () => clearTimeout(t);
+  }, [stage, connected, pvpDown]);
 
   // BGM per stage.
   useEffect(() => {
@@ -295,10 +318,21 @@ export default function PvpPage() {
   }, []);
 
   /**
-   * Nobody answered. The house takes the seat itself — and the overlay says so rather than
-   * dressing an AI up in a fake player name. The AI match lives on the hub route, so we
-   * hold the "庄家入座" plate on screen long enough to read, then hand off.
+   * The house takes the seat, and the overlay says so rather than dressing an AI up in a
+   * fake player name. The AI match lives on the hub route, so hold the "庄家入座" plate on
+   * screen long enough to read, then hand off.
+   *
+   * Declared before seatTheHouse on purpose: a useCallback dependency array is evaluated
+   * during render, so referencing a `const` declared further down throws on first paint.
    */
+  const seatHouseDirectly = useCallback(() => {
+    setSeatOpp({ name: '庄 家', isHouse: true });
+    setSeatPhase('seated');
+    audio.sfx('click');
+    handoffTimer.current = setTimeout(() => router.push(`/?table=${tier}`), 2200);
+  }, [router, tier]);
+
+  /** Nobody answered within the give-up window — check it's safe, then seat the house. */
   const seatTheHouse = useCallback(() => {
     const socket = socketRef.current;
     if (!socket) {
@@ -320,19 +354,22 @@ export default function PvpPage() {
         return;
       }
       if (!res?.wasQueued) return; // already seated with a human — that flow owns us now
-      setSeatOpp({ name: '庄 家', isHouse: true });
-      setSeatPhase('seated');
-      audio.sfx('click');
-      handoffTimer.current = setTimeout(() => {
-        router.push(`/?table=${tier}`);
-      }, 2600);
+      seatHouseDirectly();
     });
-  }, [router, tier]);
+  }, [seatHouseDirectly]);
 
   const quickMatch = useCallback(() => {
     setError(null);
+    // No PvP server means there is no queue to stand in, so don't mime a search — the
+    // house takes the seat straight away. This path is what keeps the game playable when
+    // `npm run ws` isn't running, and what stops a production outage from taking the
+    // single-player game down with it.
+    if (!socketRef.current || pvpDown || !connected) {
+      seatHouseDirectly();
+      return;
+    }
     setBusy(true);
-    socketRef.current?.emit(
+    socketRef.current.emit(
       'quick-match',
       { tierKey: tier },
       (res: { queued?: boolean; matched?: boolean; oppName?: string; error?: string }) => {
@@ -349,7 +386,7 @@ export default function PvpPage() {
         houseTimer.current = setTimeout(seatTheHouse, HOUSE_SITS_AFTER_MS);
       },
     );
-  }, [tier, seatTheHouse]);
+  }, [tier, seatTheHouse, seatHouseDirectly, pvpDown, connected]);
 
   // Bankruptcy relief. It belongs here now: this is the screen where you choose a buy-in,
   // so it's the only place where "I can't afford any table" is actionable.
@@ -812,6 +849,8 @@ export default function PvpPage() {
   const chosen = STAKES_TIERS.find((t) => t.key === tier)!;
   const canAfford = balance === null || balance >= chosen.buyIn;
   const broke = balance !== null && balance < STAKES_TIERS[0].buyIn;
+  // Neither up nor confirmed down yet — the handshake is still in flight.
+  const settling = !connected && !pvpDown;
 
   return (
     <main className="h-screen bg-void relative overflow-hidden">
@@ -856,7 +895,7 @@ export default function PvpPage() {
               账户余额 <span className="text-amber-bright font-bold text-sm">{balance}</span> 筹码 · 全额买入制
             </p>
           )}
-          {!connected && !error && (
+          {settling && !error && (
             <p className="text-xs tracking-[2px] text-text-dim font-display mt-2">连接对战服务器中…</p>
           )}
           {invite && connected && !error && (
@@ -921,7 +960,10 @@ export default function PvpPage() {
           <button
             type="button"
             onClick={quickMatch}
-            disabled={busy || !connected || !canAfford}
+            // Gated on `settling`, NOT on `connected`: once we know the server is down
+            // this button still works (the house doesn't need it), but while the handshake
+            // is mid-flight we must not jump the queue on a server that's about to answer.
+            disabled={busy || !canAfford || settling}
             className="group relative w-full py-6 sm:py-7 transition-all duration-300 enabled:hover:-translate-y-1 enabled:active:translate-y-0 disabled:opacity-40 disabled:cursor-not-allowed"
             style={{
               clipPath: CLIP_10,
@@ -944,10 +986,10 @@ export default function PvpPage() {
             />
             <span className="relative block font-display font-black text-xl sm:text-2xl tracking-[10px] text-text-bright"
               style={{ textShadow: '0 0 22px rgba(221,34,34,0.7), 0 2px 6px rgba(0,0,0,0.9)' }}>
-              {busy ? '入 场 中 …' : '快 速 入 座'}
+              {busy ? '入 场 中 …' : settling ? '连 接 中 …' : '快 速 入 座'}
             </span>
             <span className="relative block text-[10px] tracking-[3px] text-text-muted font-display mt-2.5">
-              系统为你寻找同台位的对家 · 无人应答时由庄家接手
+              {pvpDown ? '联机服务未启动 · 由庄家亲自陪你打' : '系统为你寻找同台位的对家 · 无人应答时由庄家接手'}
             </span>
           </button>
         </div>
@@ -959,6 +1001,14 @@ export default function PvpPage() {
             <span className="text-[10px] tracking-[5px] text-text-dim uppercase font-display whitespace-nowrap">或 者 · 约 人 开 桌</span>
             <div className="deco-line flex-1" />
           </div>
+
+          {/* These two DO need the server — say why they're dark instead of leaving the
+              player poking at dead buttons. */}
+          {pvpDown && (
+            <p className="text-center text-[11px] tracking-[2px] text-text-dim font-display mb-3.5">
+              联机服务当前不可用，暂时只能和庄家对赌
+            </p>
+          )}
 
           <div className="flex flex-col sm:flex-row gap-3">
             <DecoButton color="amber" size="md" fullWidth disabled={busy || !connected || !canAfford} onClick={createRoom}>
