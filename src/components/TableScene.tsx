@@ -1261,12 +1261,6 @@ function Railing() {
 // (1.9 wide × 1.24 tall); our table is 5.1 across but only 1.39 from floor to felt.
 // Scaling uniformly to the right radius would make it 3.3 units tall — a podium. The
 // squash is invisible from a seated camera looking down at the surface.
-const DECO_TABLE = {
-  // measured off _raw/table_deco.glb: top +0.624, bottom -0.620, tabletop radius 0.959
-  scaleXZ: TABLE_R_TOP / 0.959,
-  scaleY: (TABLE_SURFACE_Y - FLOOR_Y) / 1.244,
-  minY: -0.620,
-};
 const tuneDecoTable = (m: THREE.MeshStandardMaterial) => {
   m.roughness = 0.5;
   m.metalness = 0.35;
@@ -1275,13 +1269,33 @@ const tuneDecoTable = (m: THREE.MeshStandardMaterial) => {
 };
 function DecoTableBody() {
   const model = useProp('/models/table_deco.glb', tuneDecoTable);
-  return (
-    <primitive
-      object={model}
-      position={[TABLE_GROUP_POS[0], FLOOR_Y - DECO_TABLE.minY * DECO_TABLE.scaleY, TABLE_GROUP_POS[2]]}
-      scale={[DECO_TABLE.scaleXZ, DECO_TABLE.scaleY, DECO_TABLE.scaleXZ]}
-    />
-  );
+  // Measured at runtime rather than from offline numbers. The shipped GLB is meshopt-
+  // quantized, so its real extent is (normalized ints × a node scale) — a constant copied
+  // from the raw file is a different number, and every such constant is one silent
+  // mismatch away from a floating table. Box3 sees whatever actually got loaded.
+  const fit = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const centre = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(size.x, size.z) / 2;
+    // Non-uniform on purpose: Meshy proportions this like a small café table (1.9 wide ×
+    // 1.24 tall) while ours is 5.1 across but only 1.39 from floor to felt. Matching the
+    // radius uniformly would stand it 3.3 units tall — a podium.
+    const scaleXZ = TABLE_R_TOP / radius;
+    const scaleY = (TABLE_SURFACE_Y - FLOOR_Y) / size.y;
+    // These coordinates are RELATIVE to the table group (which already sits at
+    // TABLE_GROUP_POS) — the bug this replaced fed it world coordinates from inside that
+    // group, so the table rendered a full group-height too high.
+    return {
+      scale: [scaleXZ, scaleY, scaleXZ] as [number, number, number],
+      position: [
+        -centre.x * scaleXZ,
+        FLOOR_Y - TABLE_GROUP_POS[1] - box.min.y * scaleY,
+        -centre.z * scaleXZ,
+      ] as [number, number, number],
+    };
+  }, [model]);
+  return <primitive object={model} position={fit.position} scale={fit.scale} />;
 }
 useGLTF.preload('/models/table_deco.glb');
 
@@ -1375,7 +1389,10 @@ function Table({ variant }: { variant: string }) {
       </>
       )}
 
-      {/* Felt playing surface — carpet-pile normals read as brushed felt up close */}
+      {/* Felt playing surface — carpet-pile normals read as brushed felt up close.
+          The Deco table brings its own green baize, so ours would just hide the upgrade;
+          the gold rings below it stay either way, because they're table markings. */}
+      {variant !== 'table.deco' && (
       <mesh receiveShadow position={[0, TABLE_HEIGHT / 2 + 0.006, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <circleGeometry args={[2.34, 96]} />
         <meshStandardMaterial
@@ -1389,6 +1406,7 @@ function Table({ variant }: { variant: string }) {
           emissiveIntensity={0.45}
         />
       </mesh>
+      )}
 
       {/* Rounded gold bevel at the rim — real geometry, not a painted stripe */}
       <mesh position={[0, TABLE_HEIGHT / 2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
