@@ -1912,7 +1912,17 @@ type PropDef = {
   smokeTip?: [number, number, number];
 };
 
-const TABLE_PROPS: PropDef[] = [
+// Prop sets, keyed by shop item. Each set reuses the same three anchor points on the
+// felt — they were cleared once against the chip piles, the pot and the dealer's hands
+// (0.46 to the nearest, 2.38 from the table's 2.55 rim), so a new set inherits that
+// clearance instead of needing its own audit.
+const PROP_ANCHORS = {
+  left: [-1.9, -1.05] as [number, number],
+  right: [1.9, -1.0] as [number, number],
+  far: [-1.3, -1.95] as [number, number],
+};
+
+const VICE_PROPS: PropDef[] = [
   {
     // Cigar in an ashtray. Was 14cm across — genuinely too small; a real ashtray is
     // 20–30cm. This is now 30cm, so the cigar itself is a believable ~14cm long.
@@ -1923,7 +1933,7 @@ const TABLE_PROPS: PropDef[] = [
     url: '/models/cigar.glb',
     scale: (0.3 * M) / 1.899,
     minY: -0.34,
-    at: [-1.9, -1.05],
+    at: PROP_ANCHORS.left,
     spin: 0.6,
     tune: (m) => { m.roughness = 0.7; m.metalness = 0.15; },
     smokeTip: [-0.75, 0.336, -0.67],
@@ -1935,7 +1945,7 @@ const TABLE_PROPS: PropDef[] = [
     url: '/models/whiskey.glb',
     scale: (0.25 * M) / 1.804,
     minY: -0.903,
-    at: [1.9, -1.0],
+    at: PROP_ANCHORS.right,
     spin: -0.5,
     tune: (m) => { m.roughness = 0.12; m.metalness = 0.3; }, // crystal, not frosted glass
   },
@@ -1944,11 +1954,15 @@ const TABLE_PROPS: PropDef[] = [
     url: '/models/cash.glb',
     scale: (0.3 * M) / 1.899,
     minY: -0.482,
-    at: [-1.3, -1.95],
+    at: PROP_ANCHORS.far,
     spin: 0.35,
     tune: (m) => { m.roughness = 0.9; m.metalness = 0.0; },
   },
 ];
+
+const PROP_SETS: Record<string, PropDef[]> = {
+  'props.vice': VICE_PROPS,
+};
 
 function TableProp({ url, scale, minY, at, spin, tune, smokeTip }: PropDef) {
   const model = useProp(url, tune);
@@ -1974,7 +1988,7 @@ function TableProp({ url, scale, minY, at, spin, tune, smokeTip }: PropDef) {
     </>
   );
 }
-for (const p of TABLE_PROPS) useGLTF.preload(p.url);
+for (const set of Object.values(PROP_SETS)) for (const p of set) useGLTF.preload(p.url);
 
 // A slow cigar plume. Rises, drifts, expands, fades. Kept lightweight: 14 sphere
 // billboards animated in a single useFrame, no shaders, no particle system.
@@ -2309,8 +2323,8 @@ function Scene({
         role="dealer"
       />
       <Table variant={look.table} />
-      {look.props === 'props.vice'
-        ? TABLE_PROPS.map((p) => <TableProp key={p.url} {...p} />)
+      {PROP_SETS[look.props]
+        ? PROP_SETS[look.props].map((p) => <TableProp key={p.url} {...p} />)
         : <TinAshtray />}
       {showOpponent && (SEAT_MODEL[look.seat]
         ? <Chair url={SEAT_MODEL[look.seat]} />

@@ -432,3 +432,87 @@ lobes"、"upswept lip"。抽象词换来的只是贴图上的花纹，不是几�
 - 两张桌子排掉 `smooth plain edge, flat rim` —— 这批就是为了要边缘起伏，不排掉它会给你一个平边
 - 骨灯排掉 `skeleton figure` —— 否则会得到一具站着的骷髅
 - 骨王座排掉 `person / skeleton sitting` —— 否则椅子上自带一个人
+
+---
+
+# 第三批：桌面陈设套装（2026-08-02）
+
+`props` 槽是一整套三件，摆在绒布上**同样的三个锚点**（`PROP_ANCHORS` 在 TableScene 里）：
+左（-1.9, -1.05）、右（1.9, -1.0）、远（-1.3, -1.95）。这三个位置一次性验算过和筹码堆、
+底池、庄家双手的间距（最近 0.46，距桌沿 2.38 内），新套装直接继承，不用重新审。
+
+设置同前：**智能拓扑 + 三角面 + 30000 面 + PBR + GLB**。
+
+**每件都是"一个物件"**——托盘/碟子上摆着东西算一个物件，Meshy 能做；让它同时生成三件
+散落的东西只会糊成一团（hand 那次的教训）。
+
+---
+
+## 套装 A · `props.collateral` 抵押物（◈550 · 珍稀）
+
+> 主题：输红眼的人押在桌上的东西。和「当铺」这个店名互文——你买的装饰，是别人的家当。
+
+### A1 `prop_ring` — 婚戒与怀表（左锚点）
+> A single small pewter dish holding a woman's gold wedding ring and an open silver
+> pocket watch with a cracked crystal, one standalone object seen from above at a slight
+> angle. The watch chain spills over the rim of the dish. Tarnished metal, worn gold,
+> a hairline crack across the watch face. Shallow, compact, sits flat on a table.
+
+**Negative:** `hand, fingers, person, table, cloth, background, jewelry box, many rings, pile of jewelry, floating, low quality`
+
+### A2 `prop_ticket` — 当票与火漆（右锚点）
+> A single short stack of yellowed pawn tickets on a table, one standalone object.
+> The top ticket is stamped with a red wax seal and pierced by a brass spike stand that
+> holds the stack together. A stubby ink stamp lies against the base of the spike.
+> Foxed paper, dried red wax, tarnished brass. Compact and flat.
+
+**Negative:** `hand, person, table, desk, background, books, scroll, open book, floating, tall stack, low quality`
+
+### A3 `prop_teeth` — 义眼与金牙（远锚点）
+> A single small open velvet-lined box on a table, one standalone object, seen from
+> above at a slight angle. Inside on dark red velvet lie three gold teeth and one glass
+> eye. The box lid is open and folded back. Worn black leather outside, deep red velvet
+> inside, dull gold, glossy glass. Small, shallow, sits flat.
+
+**Negative:** `hand, person, skull, full denture, mouth, table, background, jewelry, coins, closed box, floating, low quality`
+
+---
+
+## 套装 B · `props.eastern` 东方局（◈550 · 珍稀）
+
+> 主题：同样的恶习，另一套器物。香炉带烟——复用雪茄那套烟雾系统。
+
+### B1 `prop_teapot` — 紫砂壶与杯（左锚点）
+> A single small purple-clay Yixing teapot with one matching tea cup beside it on a
+> round clay tray, one standalone object. Unglazed dark purple-brown clay with a matte
+> stony surface, a simple bamboo-knot handle and spout. The cup is half full of dark
+> tea. Compact, low, sits flat on a table.
+
+**Negative:** `hand, person, table, cloth, background, tea set, many cups, porcelain, glossy glaze, bright colors, teapot on stove, floating, low quality`
+
+### B2 `prop_coins` — 铜钱串与算珠（右锚点）
+> A single coiled string of antique Chinese square-holed bronze coins lying on a table,
+> one standalone object, with three loose coins fallen beside the coil and a small
+> counting-bead marker resting on top. Dark green-black patina on aged bronze, frayed
+> red silk cord. Flat, compact, sits directly on the surface.
+
+**Negative:** `hand, person, table, background, purse, bag, modern coins, gold ingots, stacked tall, abacus frame, floating, low quality`
+
+### B3 `prop_incense` — 铜香炉（远锚点·带烟）
+> A single small bronze incense burner on three short legs, one standalone object, with
+> two lit incense sticks standing upright in its ash bed and glowing orange at the tips.
+> A squat round belly, two loop handles at the rim, engraved cloud patterns. Dark
+> patinated bronze, pale grey ash. Compact and low.
+
+**Negative:** `smoke, fog, mist, hand, person, table, altar, background, temple, large censer, tall pedestal, many sticks, floating, low quality`
+
+> ⚠️ B3 的 negative 里**必须排掉 smoke/fog** —— 烟是我们代码里的粒子系统画的
+> （`Smoke` 组件，接在 `smokeTip` 上）。让 Meshy 把烟建成几何，只会得到一坨白色多边形。
+
+---
+
+## 拿到之后
+
+丢进 `public/models/`，在 `scripts/optimize-models.mjs` 的 PLAN 里加条目（`ratio: null, tex: 512`
+就够，这些在桌上只占几十像素），跑一次压缩；然后在 TableScene 的 `PROP_SETS` 里加两个数组、
+`lib/shop.ts` 里加两件商品。摆放尺寸按真实物件大小填（茶壶 ~14cm，香炉 ~12cm，碟子 ~11cm）。
