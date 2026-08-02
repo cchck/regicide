@@ -148,8 +148,33 @@ function getBodyGeometry(): THREE.ExtrudeGeometry {
 // carries N8AO, DOF and volumetric beams, and a new light per played card would mean a
 // shader recompile at the exact moment the player is watching.
 //
-// `flashMs` is the whole budget for the impact. Short — the card is on screen for a long
-// time afterwards and a lingering effect would turn into wallpaper.
+// The impact used to be an emissive pulse across the whole card face. That was wrong twice
+// over: brightening a large rectangle in a very dark room is glare by construction, and
+// cards do not glow. It is now something the card *displaces* — liquid on the felt, which
+// is local, physical, and reads without touching the scene's exposure.
+//
+// The two liquids follow the two tempers already established above:
+//   emperor — molten gold WELLS UP from under the card and spreads slowly. Weight.
+//   slave   — blood SPRAYS outward, fast and scattered. Violence.
+//   citizen — nothing, still. If every card is special, none is.
+interface Splat {
+  color: string;
+  emissive: string;
+  emissiveIntensity: number;
+  metalness: number;
+  roughness: number;
+  /** Final pool radius in world units. The card is 0.72 × 1.0, so >0.5 peeks out. */
+  poolR: number;
+  /** Seconds to reach full radius, then to hold, then to fade out. */
+  spread: number;
+  hold: number;
+  fade: number;
+  drops: number;
+  dropSpeed: number;
+  dropUp: number;
+  dropSize: number;
+}
+
 interface CardFeel {
   /** Approach speed. Low = heavy and deliberate, high = thrown. */
   posRate: number;
@@ -157,40 +182,183 @@ interface CardFeel {
   arc: number;
   /** Mid-flight tilt wobble. */
   wobble: number;
-  /** Fraction the card squashes on impact, recovering as the flash decays. */
+  /** Fraction the card squashes on impact, recovering over PRESS_RECOVER. */
   press: number;
-  flashColor: string;
-  flashPeak: number;
-  flashMs: number;
+  splat: Splat | null;
 }
 
+/** How long the landing squash takes to come back out. */
+const PRESS_RECOVER = 0.18;
+
 const CARD_FEEL: Record<CardType, CardFeel> = {
-  // Heavy. Comes in slow and high, presses into the felt, and the gold swells rather than
-  // snaps — the longest of the three, because weight is the whole idea.
-  emperor: { posRate: 4.6, arc: 0.23, wobble: 0.05, press: 0.045, flashColor: '#d4a838', flashPeak: 1.5, flashMs: 240 },
-  // The baseline, and it stays plain on purpose. If every card is special, none is.
-  citizen: { posRate: 7.0, arc: 0.16, wobble: 0.10, press: 0, flashColor: '#000000', flashPeak: 0, flashMs: 0 },
-  // Fast, flat and mean. Arrives before you've finished reading it, with one red snap.
-  slave: { posRate: 11.0, arc: 0.06, wobble: 0.17, press: 0.02, flashColor: '#ff2a2a', flashPeak: 1.9, flashMs: 140 },
+  emperor: {
+    posRate: 4.6, arc: 0.23, wobble: 0.05, press: 0.045,
+    splat: {
+      color: '#c9a23c', emissive: '#7a5410', emissiveIntensity: 0.85,
+      metalness: 0.92, roughness: 0.16,
+      poolR: 0.58, spread: 0.55, hold: 0.5, fade: 1.0,
+      // Few, fat and low: molten gold is heavy, so it lobs rather than sprays.
+      drops: 5, dropSpeed: 0.34, dropUp: 0.6, dropSize: 0.019,
+    },
+  },
+  citizen: { posRate: 7.0, arc: 0.16, wobble: 0.10, press: 0, splat: null },
+  slave: {
+    posRate: 11.0, arc: 0.06, wobble: 0.17, press: 0.02,
+    splat: {
+      color: '#7a0f13', emissive: '#2a0406', emissiveIntensity: 0.3,
+      metalness: 0.1, roughness: 0.26,
+      poolR: 0.40, spread: 0.16, hold: 0.25, fade: 0.7,
+      drops: 14, dropSpeed: 1.15, dropUp: 0.78, dropSize: 0.011,
+    },
+  },
 };
+
+/**
+ * An irregular disc lying in the XZ plane. A true circle reads as a decal; lobed edges
+ * read as liquid. Built once per kind and shared — the animation is all in the transform
+ * and the material, never the geometry.
+ */
+function makeSplatGeometry(seed: number, segments = 44): THREE.BufferGeometry {
+  let s = seed;
+  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+  const raw = Array.from({ length: segments }, () => 0.74 + rnd() * 0.5);
+  // One smoothing pass, or the rim comes out spiky rather than lobed.
+  const rim = raw.map((v, i) => (raw[(i - 1 + segments) % segments] + v * 2 + raw[(i + 1) % segments]) / 4);
+
+  const pos: number[] = [0, 0, 0];
+  const norm: number[] = [0, 1, 0];
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    pos.push(Math.cos(a) * rim[i], 0, Math.sin(a) * rim[i]);
+    norm.push(0, 1, 0);
+  }
+  const idx: number[] = [];
+  for (let i = 0; i < segments; i++) idx.push(0, 1 + i, 1 + ((i + 1) % segments));
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+  geo.setIndex(idx);
+  return geo;
+}
+
+let poolGeoCache: THREE.BufferGeometry | null = null;
+const poolGeometry = () => (poolGeoCache ??= makeSplatGeometry(20260802));
+
+let dropGeoCache: THREE.SphereGeometry | null = null;
+const dropGeometry = () => (dropGeoCache ??= new THREE.SphereGeometry(1, 6, 4));
+
+const DUMMY = new THREE.Object3D();
+
+/**
+ * The liquid. Driven by a clock the parent advances — negative until the card lands, then
+ * seconds since. Kept outside the card's animated group so it stays put on the felt while
+ * the card settles above it.
+ */
+function Splatter({ spec, at, clock }: {
+  spec: Splat;
+  at: [number, number, number];
+  clock: { current: number };
+}) {
+  const poolRef = useRef<THREE.Mesh>(null);
+  const dropsRef = useRef<THREE.InstancedMesh>(null);
+
+  const material = useMemo(() => new THREE.MeshStandardMaterial({
+    color: spec.color,
+    emissive: spec.emissive,
+    emissiveIntensity: spec.emissiveIntensity,
+    metalness: spec.metalness,
+    roughness: spec.roughness,
+    transparent: true,
+    opacity: 0,
+    // The pool sits a hair above the felt; without this it z-fights, and writing depth
+    // would also make the droplets punch holes in each other.
+    depthWrite: false,
+  }), [spec]);
+  useEffect(() => () => material.dispose(), [material]);
+
+  // Fixed per-droplet ballistics, rolled once so a re-render can't reshuffle mid-flight.
+  const seeds = useMemo(() => Array.from({ length: spec.drops }, (_, i) => {
+    const a = (i / spec.drops) * Math.PI * 2 + Math.random() * 0.8;
+    return {
+      a,
+      speed: spec.dropSpeed * (0.55 + Math.random() * 0.75),
+      up: spec.dropUp * (0.6 + Math.random() * 0.7),
+      size: spec.dropSize * (0.6 + Math.random() * 0.8),
+    };
+  }), [spec]);
+
+  const total = spec.spread + spec.hold + spec.fade;
+
+  useFrame(() => {
+    const t = clock.current;
+    const pool = poolRef.current;
+    const drops = dropsRef.current;
+    if (!pool || !drops) return;
+
+    if (t < 0 || t > total) {
+      pool.visible = false;
+      drops.visible = false;
+      return;
+    }
+    pool.visible = true;
+
+    // Pool: ease-out spread, hold, then fade. Gold eases far more slowly than blood.
+    const grow = Math.min(t / spec.spread, 1);
+    const eased = 1 - Math.pow(1 - grow, 3);
+    const r = spec.poolR * eased;
+    pool.scale.set(r, 1, r);
+
+    const fadeStart = spec.spread + spec.hold;
+    const alpha = t < fadeStart ? Math.min(grow * 1.4, 1) : 1 - (t - fadeStart) / spec.fade;
+    material.opacity = Math.max(0, alpha) * 0.92;
+
+    // Droplets: thrown outward, pulled down, flattened and shrunk once they land.
+    const G = 6;
+    let anyAlive = false;
+    for (let i = 0; i < seeds.length; i++) {
+      const d = seeds[i];
+      let y = d.up * t - 0.5 * G * t * t;
+      let squash = 1;
+      if (y <= 0) {
+        y = 0;
+        // Landed: spread into a speck and disappear, rather than vanishing mid-air.
+        const sinceLand = t - (2 * d.up) / G;
+        squash = Math.max(0, 1 - sinceLand / 0.35);
+      }
+      const travel = y > 0 ? t : (2 * d.up) / G;
+      const scale = d.size * squash * (y > 0 ? 1 : 1.4);
+      if (scale > 0.0001) anyAlive = true;
+      DUMMY.position.set(Math.cos(d.a) * d.speed * travel, y, Math.sin(d.a) * d.speed * travel);
+      DUMMY.scale.set(scale, scale * (y > 0 ? 1 : 0.35), scale);
+      DUMMY.updateMatrix();
+      drops.setMatrixAt(i, DUMMY.matrix);
+    }
+    drops.instanceMatrix.needsUpdate = true;
+    drops.visible = anyAlive;
+  });
+
+  return (
+    <group position={at}>
+      <mesh ref={poolRef} geometry={poolGeometry()} material={material} visible={false} renderOrder={2} />
+      <instancedMesh
+        ref={dropsRef}
+        args={[dropGeometry(), material, spec.drops]}
+        visible={false}
+        renderOrder={3}
+      />
+    </group>
+  );
+}
 
 // The bare card visual (rounded body + printed faces) — shared by the played-card
 // animation and the first-person hand fan. Orientation is the parent's job.
 const IDLE_EMISSIVE = '#0a0812';
 const IDLE_EMISSIVE_INTENSITY = 0.35;
 
-export function CardMesh({ type, castShadow = true, flash }: {
+export function CardMesh({ type, castShadow = true }: {
   type: CardType;
   castShadow?: boolean;
-  /**
-   * Impact pulse, 1 → 0, owned and decayed by the parent. Driving the card's own emissive
-   * costs nothing: no new light in the scene, so no light-count change and no shader
-   * recompile mid-play. Omit it and this stays a plain card.
-   *
-   * Read a frame late — R3F runs a child's useFrame before its parent's — which is
-   * invisible at these durations and not worth a priority argument to fix.
-   */
-  flash?: { current: number };
 }) {
   const backId = useContext(CardBackContext);
   const finish = BACK_FINISH[backId] ?? BACK_FINISH['cardBack.house'];
@@ -204,31 +372,6 @@ export function CardMesh({ type, castShadow = true, flash }: {
     roughness: finish.roughness, metalness: finish.metalness,
     emissive: IDLE_EMISSIVE, emissiveIntensity: IDLE_EMISSIVE_INTENSITY,
   }), [backId, finish]);
-
-  const feel = CARD_FEEL[type];
-  const idleColor = useMemo(() => new THREE.Color(IDLE_EMISSIVE), []);
-  const hotColor = useMemo(() => new THREE.Color(feel.flashColor), [feel.flashColor]);
-  const lit = useRef(false);
-
-  useFrame(() => {
-    // The citizen opts out entirely: no ref work, no material writes, nothing to undo.
-    // (It also sidesteps the frame-late read briefly showing it a stale pulse.)
-    if (!flash || feel.flashPeak <= 0) return;
-    const v = flash.current;
-    // Skip the work entirely once it has burned out, but run one last frame to put the
-    // material back exactly where it started — otherwise the card keeps a faint tint.
-    if (v <= 0.001) {
-      if (lit.current) {
-        frontMat.emissive.copy(idleColor);
-        frontMat.emissiveIntensity = IDLE_EMISSIVE_INTENSITY;
-        lit.current = false;
-      }
-      return;
-    }
-    lit.current = true;
-    frontMat.emissive.copy(idleColor).lerp(hotColor, v);
-    frontMat.emissiveIntensity = IDLE_EMISSIVE_INTENSITY + feel.flashPeak * v;
-  });
 
   useEffect(() => {
     return () => {
@@ -281,9 +424,10 @@ export default function PlayedCard({
   const slammed = useRef(false);
   const dest = useRef(new THREE.Vector3());
   const feel = CARD_FEEL[type];
-  // Impact pulse, decayed here and read by CardMesh. `landed` makes it fire exactly once
-  // per card: without it the glide's tail end would retrigger it every frame.
-  const flash = useRef(0);
+  // Seconds since the card hit the felt; negative until it does. Drives both the landing
+  // squash and the liquid. `landed` makes it fire exactly once — without it the tail of
+  // the glide would retrigger every frame.
+  const impactT = useRef(-1);
   const landed = useRef(false);
 
   const targetVec = useMemo(() => new THREE.Vector3(...target), [target]);
@@ -323,8 +467,10 @@ export default function PlayedCard({
         slideX = 0.18;
         if (!slammed.current && flip.current < 0.35) {
           slammed.current = true;
+          // The showdown slam IS this card's impact — and for the opponent's card it is
+          // the FIRST one, because a face-down landing deliberately produces nothing.
           landed.current = true;
-          flash.current = 1; // the showdown slam IS this card's impact
+          impactT.current = 0;
           onSlam?.();
         }
       }
@@ -344,23 +490,21 @@ export default function PlayedCard({
 
     // Touchdown on a normal play. 0.96 rather than 1: the lerp approaches asymptotically
     // and would never reach the target exactly.
-    if (!ceremony && !landed.current && progress > 0.96) {
+    //
+    // A FACE-DOWN landing fires nothing. This is not a polish decision — gold welling out
+    // from under the opponent's hidden card would announce that they played the emperor,
+    // and the entire game is built on not knowing that until the reveal.
+    if (!ceremony && !landed.current && !faceDown && progress > 0.96) {
       landed.current = true;
-      flash.current = 1;
+      impactT.current = 0;
     }
-
-    // Burn down the pulse. Linear over flashMs — an exponential tail would leave a faint
-    // glow hanging around long after the hit, which is the opposite of what's wanted.
-    if (flash.current > 0 && feel.flashMs > 0) {
-      flash.current = Math.max(0, flash.current - (delta * 1000) / feel.flashMs);
-    } else if (feel.flashMs === 0) {
-      flash.current = 0;
-    }
+    if (impactT.current >= 0) impactT.current += delta;
 
     const scaleSpeed = 1 - Math.exp(-delta * 6);
     scale.current += (1 - scale.current) * scaleSpeed;
-    // Squash into the felt on impact and recover as the pulse fades — the weight cue.
-    group.current.scale.setScalar(scale.current * (1 - feel.press * flash.current));
+    // Squash into the felt on impact, easing back out — the weight cue.
+    const pressT = impactT.current < 0 ? 1 : Math.min(impactT.current / PRESS_RECOVER, 1);
+    group.current.scale.setScalar(scale.current * (1 - feel.press * (1 - pressT)));
 
     flip.current += (flipTarget - flip.current) * (1 - Math.exp(-delta * flipRate));
 
@@ -375,18 +519,29 @@ export default function PlayedCard({
   });
 
   return (
-    <group ref={group}>
-      <CardMesh type={type} flash={flash} />
-      {/* Winner highlight — local +z is world-up once the card lies flat */}
-      {resultGlow && (
-        <pointLight
-          position={[0, 0, 0.35]}
-          color={resultGlow === 'gold' ? '#d4a838' : '#ff2a2a'}
-          intensity={2.4}
-          distance={1.8}
-          decay={2}
+    <>
+      {/* Outside the animated group on purpose: the liquid belongs to the felt, and must
+          not ride along as the card settles, wobbles or gets picked up for the showdown. */}
+      {feel.splat && (
+        <Splatter
+          spec={feel.splat}
+          at={[target[0], target[1] - 0.008, target[2]]}
+          clock={impactT}
         />
       )}
-    </group>
+      <group ref={group}>
+        <CardMesh type={type} />
+        {/* Winner highlight — local +z is world-up once the card lies flat */}
+        {resultGlow && (
+          <pointLight
+            position={[0, 0, 0.35]}
+            color={resultGlow === 'gold' ? '#d4a838' : '#ff2a2a'}
+            intensity={2.4}
+            distance={1.8}
+            decay={2}
+          />
+        )}
+      </group>
+    </>
   );
 }
