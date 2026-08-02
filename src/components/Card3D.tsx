@@ -157,20 +157,30 @@ function getBodyGeometry(): THREE.ExtrudeGeometry {
 //   emperor — molten gold WELLS UP from under the card and spreads slowly. Weight.
 //   slave   — blood SPRAYS outward, fast and scattered. Violence.
 //   citizen — nothing, still. If every card is special, none is.
+// Sizing note, learned the hard way: the card lies flat and is 0.72 × 1.0, so anything
+// drawn on the felt inside a ~0.5 radius is under the card and therefore invisible. The
+// readable parts of this effect are the ones the card cannot cover — a ring that races
+// out past it, and droplets thrown high enough to be silhouetted against the dark room.
 interface Splat {
   color: string;
   emissive: string;
   emissiveIntensity: number;
+  /** Kept well below a mirror finish: a polished flat disc on a table reflects the dark
+   *  ceiling and reads as a black hole. A broad sheen carries the material better. */
   metalness: number;
   roughness: number;
-  /** Final pool radius in world units. The card is 0.72 × 1.0, so >0.5 peeks out. */
+  /** Final pool radius. Must clear ~0.5 or the card sits on top of the whole thing. */
   poolR: number;
+  /** How far the shock ring races out. This is the part that's always visible. */
+  ringR: number;
+  ringSecs: number;
   /** Seconds to reach full radius, then to hold, then to fade out. */
   spread: number;
   hold: number;
   fade: number;
   drops: number;
   dropSpeed: number;
+  /** Launch speed upward. Apex = up²/(2·G); anything under ~0.1 just rolls on the felt. */
   dropUp: number;
   dropSize: number;
 }
@@ -194,21 +204,40 @@ const CARD_FEEL: Record<CardType, CardFeel> = {
   emperor: {
     posRate: 4.6, arc: 0.23, wobble: 0.05, press: 0.045,
     splat: {
-      color: '#c9a23c', emissive: '#7a5410', emissiveIntensity: 0.85,
-      metalness: 0.92, roughness: 0.16,
-      poolR: 0.58, spread: 0.55, hold: 0.5, fade: 1.0,
-      // Few, fat and low: molten gold is heavy, so it lobs rather than sprays.
-      drops: 5, dropSpeed: 0.34, dropUp: 0.6, dropSize: 0.019,
+      color: '#e0ab35', emissive: '#b07a12', emissiveIntensity: 1.6,
+      metalness: 0.72, roughness: 0.34,
+      poolR: 0.95, ringR: 1.7, ringSecs: 0.68,
+      spread: 0.5, hold: 0.6, fade: 1.1,
+      // Fat, high and unhurried. Apex ≈ 1.5²/12 = 19cm, so they clear the card entirely.
+      drops: 14, dropSpeed: 0.9, dropUp: 1.5, dropSize: 0.055,
     },
   },
-  citizen: { posRate: 7.0, arc: 0.16, wobble: 0.10, press: 0, splat: null },
+  // Not nothing — dust off the felt.
+  //
+  // "The citizen stays plain" was right in kind and badly wrong in frequency: a hand is
+  // [key, citizen, citizen, citizen, citizen] (see dealHand in types.ts), so four plays in
+  // five are citizens. Giving it literally nothing meant 80% of all cards played landed
+  // with no response at all, which reads as the effect being broken rather than as the
+  // card being unremarkable. Grey, matte, over in a third of a second — the hierarchy
+  // (dust < blood < gold) still does the work.
+  citizen: {
+    posRate: 7.0, arc: 0.16, wobble: 0.10, press: 0.012,
+    splat: {
+      color: '#6d655a', emissive: '#141109', emissiveIntensity: 0.12,
+      metalness: 0, roughness: 0.95,
+      poolR: 0.6, ringR: 0.95, ringSecs: 0.3,
+      spread: 0.14, hold: 0.06, fade: 0.42,
+      drops: 7, dropSpeed: 0.75, dropUp: 0.62, dropSize: 0.014,
+    },
+  },
   slave: {
     posRate: 11.0, arc: 0.06, wobble: 0.17, press: 0.02,
     splat: {
-      color: '#7a0f13', emissive: '#2a0406', emissiveIntensity: 0.3,
-      metalness: 0.1, roughness: 0.26,
-      poolR: 0.40, spread: 0.16, hold: 0.25, fade: 0.7,
-      drops: 14, dropSpeed: 1.15, dropUp: 0.78, dropSize: 0.011,
+      color: '#a01418', emissive: '#5a0508', emissiveIntensity: 0.85,
+      metalness: 0.12, roughness: 0.3,
+      poolR: 0.7, ringR: 1.35, ringSecs: 0.36,
+      spread: 0.18, hold: 0.3, fade: 0.8,
+      drops: 22, dropSpeed: 1.9, dropUp: 1.8, dropSize: 0.038,
     },
   },
 };
@@ -248,6 +277,17 @@ const poolGeometry = () => (poolGeoCache ??= makeSplatGeometry(20260802));
 let dropGeoCache: THREE.SphereGeometry | null = null;
 const dropGeometry = () => (dropGeoCache ??= new THREE.SphereGeometry(1, 6, 4));
 
+// Thin annulus of unit radius, laid flat. Scaled outward as the shock wave travels; the
+// thickness rides along with the scale, which is what a spreading wave does anyway.
+let ringGeoCache: THREE.BufferGeometry | null = null;
+function ringGeometry(): THREE.BufferGeometry {
+  if (ringGeoCache) return ringGeoCache;
+  const g = new THREE.RingGeometry(0.9, 1, 56);
+  g.rotateX(-Math.PI / 2);
+  ringGeoCache = g;
+  return g;
+}
+
 const DUMMY = new THREE.Object3D();
 
 /**
@@ -261,6 +301,7 @@ function Splatter({ spec, at, clock }: {
   clock: { current: number };
 }) {
   const poolRef = useRef<THREE.Mesh>(null);
+  const ringRef = useRef<THREE.Mesh>(null);
   const dropsRef = useRef<THREE.InstancedMesh>(null);
 
   const material = useMemo(() => new THREE.MeshStandardMaterial({
@@ -275,7 +316,22 @@ function Splatter({ spec, at, clock }: {
     // would also make the droplets punch holes in each other.
     depthWrite: false,
   }), [spec]);
-  useEffect(() => () => material.dispose(), [material]);
+
+  // The ring outlives the pool's ramp and fades on its own schedule, so it needs its own
+  // opacity — hence a second material rather than sharing one.
+  const ringMaterial = useMemo(() => new THREE.MeshStandardMaterial({
+    color: spec.color,
+    emissive: spec.emissive,
+    emissiveIntensity: spec.emissiveIntensity * 1.5,
+    metalness: spec.metalness,
+    roughness: spec.roughness,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }), [spec]);
+
+  useEffect(() => () => { material.dispose(); ringMaterial.dispose(); }, [material, ringMaterial]);
 
   // Fixed per-droplet ballistics, rolled once so a re-render can't reshuffle mid-flight.
   const seeds = useMemo(() => Array.from({ length: spec.drops }, (_, i) => {
@@ -290,18 +346,40 @@ function Splatter({ spec, at, clock }: {
 
   const total = spec.spread + spec.hold + spec.fade;
 
+  // Hide everything until the first frame runs. Instance matrices start as the identity,
+  // which would otherwise park unit-radius spheres at the origin for one frame.
+  useEffect(() => {
+    if (poolRef.current) poolRef.current.visible = false;
+    if (ringRef.current) ringRef.current.visible = false;
+    if (dropsRef.current) dropsRef.current.visible = false;
+  }, []);
+
   useFrame(() => {
     const t = clock.current;
     const pool = poolRef.current;
+    const ring = ringRef.current;
     const drops = dropsRef.current;
-    if (!pool || !drops) return;
+    if (!pool || !ring || !drops) return;
 
     if (t < 0 || t > total) {
       pool.visible = false;
+      ring.visible = false;
       drops.visible = false;
       return;
     }
     pool.visible = true;
+
+    // Shock ring — the one part of this the card can never cover, so it carries the read.
+    // Races out fast, decelerating, and is gone before the pool has finished spreading.
+    if (t < spec.ringSecs) {
+      const rt = t / spec.ringSecs;
+      const rr = spec.ringR * (1 - Math.pow(1 - rt, 2.2));
+      ring.visible = true;
+      ring.scale.set(Math.max(rr, 0.001), 1, Math.max(rr, 0.001));
+      ringMaterial.opacity = (1 - rt) * 0.85;
+    } else {
+      ring.visible = false;
+    }
 
     // Pool: ease-out spread, hold, then fade. Gold eases far more slowly than blood.
     const grow = Math.min(t / spec.spread, 1);
@@ -309,8 +387,12 @@ function Splatter({ spec, at, clock }: {
     const r = spec.poolR * eased;
     pool.scale.set(r, 1, r);
 
+    // Opacity ramps in 80ms regardless of how slowly the pool spreads. Tying it to `grow`
+    // meant the droplets — which share this material and are thrown at full force on the
+    // first frame — spent their whole flight half-transparent.
     const fadeStart = spec.spread + spec.hold;
-    const alpha = t < fadeStart ? Math.min(grow * 1.4, 1) : 1 - (t - fadeStart) / spec.fade;
+    const rise = Math.min(t / 0.08, 1);
+    const alpha = t < fadeStart ? rise : rise * (1 - (t - fadeStart) / spec.fade);
     material.opacity = Math.max(0, alpha) * 0.92;
 
     // Droplets: thrown outward, pulled down, flattened and shrunk once they land.
@@ -339,14 +421,12 @@ function Splatter({ spec, at, clock }: {
   });
 
   return (
+    // No `visible` in JSX: it's mutated every frame, and leaving a literal here invites
+    // React to stamp it back over the animation on any incidental re-render.
     <group position={at}>
-      <mesh ref={poolRef} geometry={poolGeometry()} material={material} visible={false} renderOrder={2} />
-      <instancedMesh
-        ref={dropsRef}
-        args={[dropGeometry(), material, spec.drops]}
-        visible={false}
-        renderOrder={3}
-      />
+      <mesh ref={poolRef} geometry={poolGeometry()} material={material} renderOrder={2} />
+      <mesh ref={ringRef} geometry={ringGeometry()} material={ringMaterial} renderOrder={2} />
+      <instancedMesh ref={dropsRef} args={[dropGeometry(), material, spec.drops]} renderOrder={3} />
     </group>
   );
 }
