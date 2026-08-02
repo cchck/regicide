@@ -356,7 +356,28 @@ export default function GameBoard() {
       setSitting(false);
     }, 2000); // SIT_SECONDS(1.9s) + a settling beat
   }, []);
-  useEffect(() => () => { if (sitTimer.current) clearTimeout(sitTimer.current); }, []);
+  // Clearing the handle is not enough — the ref has to be released too. `sitDown` treats a
+  // non-null ref as "a glide is already running", so a cleanup that cancels the timeout but
+  // leaves the ref set locks out every future glide for the life of the component. In dev
+  // that fires on the very first mount, because StrictMode unmounts and remounts once.
+  useEffect(() => () => {
+    if (sitTimer.current) clearTimeout(sitTimer.current);
+    sitTimer.current = null;
+  }, []);
+
+  // Watchdog. `sitting` hides the entire hub and parks the camera in the seat, so if it
+  // ever sticks the player is left staring at a dead room with no way out — which is
+  // exactly what the StrictMode bug above produced. Nothing legitimate holds it for more
+  // than a glide plus one network round-trip, so anything past 12s is a fault: give the
+  // hub back and leave a trace rather than stranding them.
+  useEffect(() => {
+    if (!sitting) return;
+    const t = setTimeout(() => {
+      console.warn('[hub] sit-down glide never landed — releasing the camera');
+      setSitting(false);
+    }, 12_000);
+    return () => clearTimeout(t);
+  }, [sitting]);
 
   // The host acknowledges you now and then — a slow seated clap, "the seat is open".
   const [hubDealer, setHubDealer] = useState<DealerAction>('idle');
@@ -566,23 +587,48 @@ export default function GameBoard() {
   // opponent's personality quietly dismantles the entire game — the whole point is to read
   // someone you don't know yet, and a menu that tells you "this one bluffs" hands over the
   // answer before the first card.
-  const handoffRef = useRef(false);
+  // Read once and park it in STATE, not a ref, and consume it in a second effect.
+  //
+  // The obvious single-effect version is broken in dev and it fails in the worst possible
+  // way — silently. StrictMode mounts, unmounts and remounts: the first pass strips the
+  // query string and arms the glide, the unmount cancels the glide, and the remount finds
+  // both the ref set and the URL already clean, so it bails. The camera is left parked in
+  // the seat with the hub faded out and no cards ever dealt.
+  //
+  // Holding it in state fixes that by construction: the remount re-runs the consumer
+  // effect, which re-arms its own timeout, and the handoff is only cleared once the cards
+  // are actually on the table.
+  const [handoff, setHandoff] = useState<{ tier: (typeof STAKES_TIERS)[number]; temperament: (typeof AI_TEMPERAMENTS)[number] } | null>(null);
+  const handoffRead = useRef(false);
   useEffect(() => {
-    if (handoffRef.current) return;
-    // Wait for the session to resolve before dealing. `loggedIn` is false while it loads,
-    // and handleStart's guest path skips the buy-in entirely — firing early would hand out
-    // a free match at whatever tier the URL names.
-    if (sessionStatus === 'loading') return;
+    if (handoffRead.current) return;
+    handoffRead.current = true;
     const key = new URLSearchParams(window.location.search).get('table');
     if (!key) return;
-    handoffRef.current = true;
     window.history.replaceState(null, '', '/'); // a refresh must not re-deal
-    const t = STAKES_TIERS.find((s) => s.key === key);
-    if (!t) return;
-    const rolled = AI_TEMPERAMENTS[Math.floor(Math.random() * AI_TEMPERAMENTS.length)];
-    // One glide into the seat, exactly as the tutorial does, then the cards.
-    sitDown(() => { void handleStart(t.difficulty, rolled, t.buyIn); });
-  }, [sessionStatus, sitDown, handleStart]);
+    const tier = STAKES_TIERS.find((s) => s.key === key);
+    if (!tier) return;
+    // Rolled once, here, so a re-render can't reshuffle the opponent mid-glide.
+    setHandoff({ tier, temperament: AI_TEMPERAMENTS[Math.floor(Math.random() * AI_TEMPERAMENTS.length)] });
+  }, []);
+
+  useEffect(() => {
+    if (!handoff) return;
+    // Wait for the session to resolve before dealing. `loggedIn` is false while it loads,
+    // and handleStart's guest path skips the buy-in entirely — firing early would hand out
+    // a free match at whatever tier the URL named.
+    if (sessionStatus === 'loading') return;
+    setSitting(true);
+    audio.sfx('click');
+    const t = setTimeout(async () => {
+      // Stay seated through the await: handleStart is a network round-trip, and dropping
+      // `sitting` first would flash the hub back up between the glide and the deal.
+      await handleStart(handoff.tier.difficulty, handoff.temperament, handoff.tier.buyIn);
+      setHandoff(null);
+      setSitting(false);
+    }, 2000); // SIT_SECONDS(1.9s) + a settling beat
+    return () => clearTimeout(t);
+  }, [handoff, sessionStatus, handleStart]);
 
   // Report each resolved round to the tendency log — the raw material for the
   // future "read your opponent" PvP feature. Once per round, logged-in users only.
