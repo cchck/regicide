@@ -516,3 +516,60 @@ lobes"、"upswept lip"。抽象词换来的只是贴图上的花纹，不是几�
 丢进 `public/models/`，在 `scripts/optimize-models.mjs` 的 PLAN 里加条目（`ratio: null, tex: 512`
 就够，这些在桌上只占几十像素），跑一次压缩；然后在 TableScene 的 `PROP_SETS` 里加两个数组、
 `lib/shop.ts` 里加两件商品。摆放尺寸按真实物件大小填（茶壶 ~14cm，香炉 ~12cm，碟子 ~11cm）。
+
+---
+
+# 第四批：庄家面具（新槽位 · 2026-08-02）
+
+**为什么是面具而不是整套装束**：庄家是**带骨骼动画**的，换整个模型要重跑绑骨 + 重新解算
+`SEAT_FIX` 的三轴胯骨偏移（当初为了修"屁股穿过椅子"，那些数字是从 GLB 的 Hips 通道里
+一帧帧读出来的）。而面具是**静态道具挂在头骨上**——和眼睛发光一样用 `createPortal` 挂到
+`Head` bone，零绑骨、零重算，而且它盖住的正好是画面焦点。
+
+头骨实测（模型空间，坐姿）：宽 0.213 / 高 0.288 / 深 0.340，`DEALER_SCALE` 1.85 之后
+世界尺寸约 39 × 53 × 63cm。面具做到脸宽即可。
+
+设置同前：**智能拓扑 + 三角面 + 30000 面 + PBR + GLB**，不绑骨、不要 A-pose。
+
+---
+
+## ① `mask_porcelain` — 白瓷面具（◈500 · 精制）
+
+> A single ceramic face mask, one standalone object, front view, hollow on the back.
+> A smooth featureless white porcelain face with no mouth, only two narrow almond eye
+> slits and a faint nose ridge. A single hairline crack runs from the left eye slit down
+> to the jaw, its edges stained brown with age. Glazed bone-white ceramic with fine
+> crazing. Two small holes at the temples for a cord.
+
+**Negative:** `head, skull, face of a person, person, mannequin, bust, neck, hair, wall, wall mount, stand, display case, full helmet, solid back, smiling, low quality`
+
+## ② `mask_plague` — 鸟嘴面具（◈900 · 珍稀）
+
+> A single plague doctor mask, one standalone object, front view, hollow on the back.
+> A long tapering leather beak curving downward, two round glass lenses in brass rims
+> set above it, and riveted brass bands running along the seams. Dark oiled blackened
+> leather, tarnished brass rivets, smoked amber glass. Buckled leather straps hanging
+> loose at the sides.
+
+**Negative:** `head, skull, person, mannequin, bust, neck, hat, wide brim hat, robe, body, wall, stand, display case, solid back, bird, crow, low quality`
+
+## ③ `mask_gilt` — 金裂面具（◈1600 · 传世）
+
+> A single ceremonial face mask, one standalone object, front view, hollow on the back.
+> A serene closed-eyed face broken into several pieces and rejoined, every crack filled
+> with a thick raised seam of gold in the kintsugi manner. The base material is matte
+> black lacquer, so the gold veins blaze across it. Narrow eye slits, a closed line of a
+> mouth, a small gold crown ridge across the brow.
+
+**Negative:** `head, skull, person, mannequin, bust, neck, hair, wall, stand, display case, solid back, whole unbroken face, smiling, low quality`
+
+---
+
+**三条 negative 的共同要点**：
+- 排掉 `head / skull / person / mannequin / bust / neck` —— 否则会连一颗头一起生成，
+  挂到骨头上就是两颗头
+- 排掉 `wall / stand / display case` —— 否则会得到一个挂在墙上的展品
+- 排掉 `solid back` + 正面写 `hollow on the back` —— 它要罩在脸上，背面实心会插进头里
+
+拿到之后：`useGLTF` 加载 → `createPortal` 到 `Head` bone（和 `eyes` 一样）→ 面具本地坐标
+约 `[0, 0.02, 0.13]`（眼睛在 z=0.11，面具要再往外一点）→ 尺寸按头宽 0.213 反推缩放。
