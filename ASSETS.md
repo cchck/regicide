@@ -276,3 +276,84 @@ fused legs, mermaid tail, sitting, crossed arms, T-pose arms raised
 2. **用 meshopt，不要用 Draco**。效果差不多，但 Draco 的解码器默认从 `gstatic.com` 的 CDN 拉，
    **国内访问会挂**——而这个项目是要国内外兼顾的。meshopt 的解码器来自 `three-stdlib`，
    打包在本地。drei 的 `useGLTF` 默认 `useMeshopt=true`，所以前端一行都不用改。
+
+---
+
+# 商城 / 场景升级：三个待生成模型（2026-08-02）
+
+三个都是**静态道具**，不绑骨、不需要 A-pose。共用设置：
+
+| 设置项 | 值 |
+|---|---|
+| Model type | **智能拓扑**（Smart Topology） |
+| Topology | **三角面**（Triangle）— 不绑骨就不需要 Quad |
+| Target polycount | **30000** |
+| Pose | 不适用 |
+| PBR | **开** |
+| 格式 | **GLB** |
+
+**通用铁律**（血泪来自 hand 那三次失败）：Meshy 只认**形态**，不认**意图**。
+永远只让它生成**一个物件**——让它"顺便"生成配套物品，结果一定是糊在一起、且和我们自己的美术冲突。
+
+---
+
+## ① `table_deco` — 装饰艺术赌桌
+
+> A single round Art Deco casino card table, viewed as one standalone object.
+> Circular tabletop with dark green felt inset in the center, surrounded by a wide
+> padded leather armrest rail in oxblood red. Polished black lacquer edge banding with
+> thin inlaid brass pinstripes forming concentric rings. Heavy fluted central pedestal
+> column widening into a stepped octagonal base. 1930s luxury, symmetrical, clean
+> geometry, empty tabletop.
+
+**Negative:**
+> chairs, stools, people, cards, playing cards, poker chips, dice, glasses, bottles,
+> ashtray, clutter, objects on table, rectangular table, modern, plastic, low quality
+
+**要点**：`empty tabletop` + negative 里排掉牌/筹码是关键——桌上任何东西都会和我们已有的
+3D 筹码堆、牌、道具打架。
+
+---
+
+## ② `sconce_deco` — 扇形壁灯
+
+> A single Art Deco wall sconce, one standalone object. A fan of nine slender vertical
+> brass blades spreading upward and outward from a stepped semicircular base, like a
+> sunburst. Frosted glass panels between the blades. Polished aged brass with dark
+> patina in the recesses. The back is completely flat for flush wall mounting.
+> Symmetrical, 1930s theater lighting fixture.
+
+**Negative:**
+> wall, background, ceiling, lamp post, floor lamp, chandelier, cable, wire, plug,
+> round back, deep body, people, low quality
+
+**要点**：`back is completely flat` 必须写进正面词，negative 里再排一次 `round back`。
+它要贴墙，背面鼓出来就会穿模。同时排掉 `wall`，否则会连一整块墙一起生成。
+
+---
+
+## ③ `ceiling_rose` — 天花板藻井
+
+> A single Art Deco ceiling rosette medallion, one standalone object, shallow relief.
+> Concentric stepped rings radiating from a central circular boss, with a sunburst
+> pattern of tapered rays between the rings. Sharp geometric chevron detailing.
+> Dark bronze with gold leaf highlights on the raised edges. Flat back, shallow depth
+> like architectural plaster molding. Symmetrical, viewed from directly below.
+
+**Negative:**
+> chandelier, lamp, light bulb, hanging fixture, chain, deep dome, sphere, room,
+> ceiling, walls, furniture, people, low quality
+
+**要点**：`shallow relief` + `flat back` + negative 排掉 `deep dome`。它是贴在天花板上的
+浅浮雕，做成深穹顶就会垂下来撞到吊灯。也要排掉 `chandelier`——藻井和吊灯是两件东西，
+让它一起生成会得到一个四不像。
+
+---
+
+## 拿到 GLB 之后
+
+1. 丢进 `public/models/`，命名 `table_deco.glb` / `sconce_deco.glb` / `ceiling_rose.glb`
+2. 在 `scripts/optimize-models.mjs` 的 `PLAN` 里加三条（参考现有条目的 ratio/tex 写法）
+3. `node scripts/optimize-models.mjs`
+4. 接线：桌子/壁灯/藻井分别替换 `Table()` / `FanSconce()` / `Ceiling()` 里的程序化几何，
+   并在 `lib/shop.ts` 把对应商品的 `ready` 改成 `true`
