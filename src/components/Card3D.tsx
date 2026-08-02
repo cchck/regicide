@@ -84,6 +84,43 @@ function getBodyGeometry(): THREE.ExtrudeGeometry {
   return geo;
 }
 
+// ————————————————————————— How each card plays —————————————————————————
+//
+// Three cards, three tempers. Until now all three flew identically, so the only thing
+// distinguishing the emperor from a citizen was the picture on it — the card you dread
+// and the card you shrug at landed exactly the same way.
+//
+// Everything here is a tweak to motion that already existed plus an emissive pulse on the
+// card's own material. Deliberately no particles and no extra lights: the scene already
+// carries N8AO, DOF and volumetric beams, and a new light per played card would mean a
+// shader recompile at the exact moment the player is watching.
+//
+// `flashMs` is the whole budget for the impact. Short — the card is on screen for a long
+// time afterwards and a lingering effect would turn into wallpaper.
+interface CardFeel {
+  /** Approach speed. Low = heavy and deliberate, high = thrown. */
+  posRate: number;
+  /** Height of the mid-flight arc. A loft reads ceremonial; flat reads like a knife. */
+  arc: number;
+  /** Mid-flight tilt wobble. */
+  wobble: number;
+  /** Fraction the card squashes on impact, recovering as the flash decays. */
+  press: number;
+  flashColor: string;
+  flashPeak: number;
+  flashMs: number;
+}
+
+const CARD_FEEL: Record<CardType, CardFeel> = {
+  // Heavy. Comes in slow and high, presses into the felt, and the gold swells rather than
+  // snaps — the longest of the three, because weight is the whole idea.
+  emperor: { posRate: 4.6, arc: 0.23, wobble: 0.05, press: 0.045, flashColor: '#d4a838', flashPeak: 1.5, flashMs: 240 },
+  // The baseline, and it stays plain on purpose. If every card is special, none is.
+  citizen: { posRate: 7.0, arc: 0.16, wobble: 0.10, press: 0, flashColor: '#000000', flashPeak: 0, flashMs: 0 },
+  // Fast, flat and mean. Arrives before you've finished reading it, with one red snap.
+  slave: { posRate: 11.0, arc: 0.06, wobble: 0.17, press: 0.02, flashColor: '#ff2a2a', flashPeak: 1.9, flashMs: 140 },
+};
+
 const edgeMaterial = new THREE.MeshStandardMaterial({
   color: '#221a28',
   roughness: 0.55,
@@ -94,15 +131,55 @@ const edgeMaterial = new THREE.MeshStandardMaterial({
 
 // The bare card visual (rounded body + printed faces) — shared by the played-card
 // animation and the first-person hand fan. Orientation is the parent's job.
-export function CardMesh({ type, castShadow = true }: { type: CardType; castShadow?: boolean }) {
+const IDLE_EMISSIVE = '#0a0812';
+const IDLE_EMISSIVE_INTENSITY = 0.35;
+
+export function CardMesh({ type, castShadow = true, flash }: {
+  type: CardType;
+  castShadow?: boolean;
+  /**
+   * Impact pulse, 1 → 0, owned and decayed by the parent. Driving the card's own emissive
+   * costs nothing: no new light in the scene, so no light-count change and no shader
+   * recompile mid-play. Omit it and this stays a plain card.
+   *
+   * Read a frame late — R3F runs a child's useFrame before its parent's — which is
+   * invisible at these durations and not worth a priority argument to fix.
+   */
+  flash?: { current: number };
+}) {
   const frontMat = useMemo(() => new THREE.MeshStandardMaterial({
     map: getTexture(type), transparent: true, roughness: 0.45, metalness: 0.05,
-    emissive: '#0a0812', emissiveIntensity: 0.35,
+    emissive: IDLE_EMISSIVE, emissiveIntensity: IDLE_EMISSIVE_INTENSITY,
   }), [type]);
   const backMat = useMemo(() => new THREE.MeshStandardMaterial({
     map: getTexture('back'), transparent: true, roughness: 0.45, metalness: 0.05,
-    emissive: '#0a0812', emissiveIntensity: 0.35,
+    emissive: IDLE_EMISSIVE, emissiveIntensity: IDLE_EMISSIVE_INTENSITY,
   }), []);
+
+  const feel = CARD_FEEL[type];
+  const idleColor = useMemo(() => new THREE.Color(IDLE_EMISSIVE), []);
+  const hotColor = useMemo(() => new THREE.Color(feel.flashColor), [feel.flashColor]);
+  const lit = useRef(false);
+
+  useFrame(() => {
+    // The citizen opts out entirely: no ref work, no material writes, nothing to undo.
+    // (It also sidesteps the frame-late read briefly showing it a stale pulse.)
+    if (!flash || feel.flashPeak <= 0) return;
+    const v = flash.current;
+    // Skip the work entirely once it has burned out, but run one last frame to put the
+    // material back exactly where it started — otherwise the card keeps a faint tint.
+    if (v <= 0.001) {
+      if (lit.current) {
+        frontMat.emissive.copy(idleColor);
+        frontMat.emissiveIntensity = IDLE_EMISSIVE_INTENSITY;
+        lit.current = false;
+      }
+      return;
+    }
+    lit.current = true;
+    frontMat.emissive.copy(idleColor).lerp(hotColor, v);
+    frontMat.emissiveIntensity = IDLE_EMISSIVE_INTENSITY + feel.flashPeak * v;
+  });
 
   useEffect(() => {
     return () => {
@@ -154,6 +231,11 @@ export default function PlayedCard({
   const ceremonyStart = useRef<number | null>(null);
   const slammed = useRef(false);
   const dest = useRef(new THREE.Vector3());
+  const feel = CARD_FEEL[type];
+  // Impact pulse, decayed here and read by CardMesh. `landed` makes it fire exactly once
+  // per card: without it the glide's tail end would retrigger it every frame.
+  const flash = useRef(0);
+  const landed = useRef(false);
 
   const targetVec = useMemo(() => new THREE.Vector3(...target), [target]);
   const layFlat = useMemo(() => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2), []);
@@ -162,10 +244,10 @@ export default function PlayedCard({
     if (!group.current) return;
     const now = state.clock.getElapsedTime();
 
-    // Defaults: normal play — glide to target, flip per prop.
+    // Defaults: normal play — glide to target, flip per prop, at this card's own tempo.
     let flipTarget = faceDown ? Math.PI : 0;
     let flipRate = 6;
-    let posRate = 7;
+    let posRate = feel.posRate;
     let hoverLift = 0;
     let slideX = 0;
 
@@ -192,6 +274,8 @@ export default function PlayedCard({
         slideX = 0.18;
         if (!slammed.current && flip.current < 0.35) {
           slammed.current = true;
+          landed.current = true;
+          flash.current = 1; // the showdown slam IS this card's impact
           onSlam?.();
         }
       }
@@ -207,11 +291,27 @@ export default function PlayedCard({
     const dist = pos.current.distanceTo(targetVec);
     if (initialDist.current === null) initialDist.current = Math.max(dist, 0.0001);
     const progress = 1 - Math.min(dist / initialDist.current, 1);
-    if (!ceremony) group.current.position.y += Math.sin(progress * Math.PI) * 0.16;
+    if (!ceremony) group.current.position.y += Math.sin(progress * Math.PI) * feel.arc;
+
+    // Touchdown on a normal play. 0.96 rather than 1: the lerp approaches asymptotically
+    // and would never reach the target exactly.
+    if (!ceremony && !landed.current && progress > 0.96) {
+      landed.current = true;
+      flash.current = 1;
+    }
+
+    // Burn down the pulse. Linear over flashMs — an exponential tail would leave a faint
+    // glow hanging around long after the hit, which is the opposite of what's wanted.
+    if (flash.current > 0 && feel.flashMs > 0) {
+      flash.current = Math.max(0, flash.current - (delta * 1000) / feel.flashMs);
+    } else if (feel.flashMs === 0) {
+      flash.current = 0;
+    }
 
     const scaleSpeed = 1 - Math.exp(-delta * 6);
     scale.current += (1 - scale.current) * scaleSpeed;
-    group.current.scale.setScalar(scale.current);
+    // Squash into the felt on impact and recover as the pulse fades — the weight cue.
+    group.current.scale.setScalar(scale.current * (1 - feel.press * flash.current));
 
     flip.current += (flipTarget - flip.current) * (1 - Math.exp(-delta * flipRate));
 
@@ -219,7 +319,7 @@ export default function PlayedCard({
     // A touch of extra tilt mid-flight so the card wobbles as it lands.
     const tiltQ = new THREE.Quaternion().setFromAxisAngle(
       new THREE.Vector3(0, 0, 1),
-      tilt + Math.sin(progress * Math.PI) * 0.1,
+      tilt + Math.sin(progress * Math.PI) * feel.wobble,
     );
     const finalQ = layFlat.clone().multiply(tiltQ).multiply(flipQ);
     group.current.quaternion.copy(finalQ);
@@ -227,7 +327,7 @@ export default function PlayedCard({
 
   return (
     <group ref={group}>
-      <CardMesh type={type} />
+      <CardMesh type={type} flash={flash} />
       {/* Winner highlight — local +z is world-up once the card lies flat */}
       {resultGlow && (
         <pointLight
