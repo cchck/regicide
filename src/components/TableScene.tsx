@@ -1354,9 +1354,15 @@ function SunkenChandelier() {
 function Adrift() {
   const chair = useProp('/models/ship_chair.glb', SHIP_TUNE.steel);
   const tray = useProp('/models/ship_service.glb', SHIP_TUNE.brass);
+  const hat = useProp('/models/wreck_hat.glb', SHIP_TUNE.steel);
+  // Rejoined offline — the GLB arrived in two pieces with 0.87 of nothing between the
+  // shoulder and the base. See scripts/fix-wreck-props.mjs.
+  const bottle = useProp('/models/wreck_bottle.glb', SHIP_TUNE.crystal);
   const group = useRef<THREE.Group>(null);
   const chairS = (0.9 * M) / 1.89;
   const trayS = (0.5 * M) / 1.91;
+  const hatS = (0.55 * M) / 1.906;
+  const bottleS = (0.31 * M) / 1.028;
 
   // One slow swell, everything on it a beat apart.
   useFrame((state) => {
@@ -1387,6 +1393,22 @@ function Adrift() {
         rotation={[0, 0.4, 0.05]}
         scale={trayS}
         userData={{ baseY: trayY, baseRz: 0.05 }}
+      />
+      {/* Silk soaks: it sits half under, brim awash. */}
+      <primitive
+        object={hat}
+        position={[-1.6, WATER_Y - 0.06, 3.4]}
+        rotation={[0.1, 1.2, -0.14]}
+        scale={hatS}
+        userData={{ baseY: WATER_Y - 0.06, baseRz: -0.14 }}
+      />
+      {/* Corked, so it floats high and rolls. */}
+      <primitive
+        object={bottle}
+        position={[3.7, WATER_Y + 0.02, 3.1]}
+        rotation={[0, -0.5, 0.08]}
+        scale={bottleS}
+        userData={{ baseY: WATER_Y + 0.02, baseRz: 0.08 }}
       />
     </group>
   );
@@ -1645,6 +1667,33 @@ function DriftingCards() {
   );
 }
 
+/**
+ * Wall dressing. The clock and the plaque give the wreck a time of death and a name — the
+ * two things that turn "a flooded room" into "a particular ship that went down".
+ *
+ * Bolted on, so these live inside the tilted group with the rest of the hull.
+ */
+function WreckWallDressing() {
+  const clock = useProp('/models/wreck_clock.glb', SHIP_TUNE.brass);
+  const plaque = useProp('/models/wreck_plaque.glb', SHIP_TUNE.brass);
+  const ring = useProp('/models/wreck_lifering.glb', SHIP_TUNE.steel);
+  // Measured spans: clock 1.906 across, plaque 1.898 across, ring 1.914 across.
+  return (
+    <group>
+      {/* Both sit on the steel either side of the promenade glass. */}
+      <primitive object={clock} position={[6.0, 3.1, -8.1]} scale={(0.5 * M) / 1.906} />
+      <primitive object={plaque} position={[-6.0, 2.9, -8.1]} scale={(0.75 * M) / 1.898} />
+      {/* On the side wall, between two portholes. Faces ±Z in model space, so it turns. */}
+      <primitive
+        object={ring}
+        position={[7.06, 2.5, -3.5]}
+        rotation={[0, -Math.PI / 2, 0]}
+        scale={(0.75 * M) / 1.914}
+      />
+    </group>
+  );
+}
+
 function PromenadeGlass() {
   const depth = useMemo(() => depthTexture(), []);
   const w = GLASS_HALF * 2;
@@ -1727,6 +1776,7 @@ function DrownedRoom() {
       <BulkheadHatch />
       <GrandStairRail />
       <PromenadeGlass />
+      <WreckWallDressing />
       {/* Plate walls */}
       <mesh position={[-7.2, wallY, -2]} rotation={[0, Math.PI / 2, 0]}>
         <planeGeometry args={[18, wallH]} />
@@ -3367,6 +3417,11 @@ useGLTF.preload('/models/ship_balustrade.glb');
 useGLTF.preload('/models/ship_caglamp.glb');
 useGLTF.preload('/models/ship_chair.glb');
 useGLTF.preload('/models/ship_service.glb');
+useGLTF.preload('/models/wreck_clock.glb');
+useGLTF.preload('/models/wreck_plaque.glb');
+useGLTF.preload('/models/wreck_lifering.glb');
+useGLTF.preload('/models/wreck_hat.glb');
+useGLTF.preload('/models/wreck_bottle.glb');
 
 const SEAT_MODEL: Record<string, string> = {
   'seat.throne': '/models/chair.glb',

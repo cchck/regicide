@@ -53,12 +53,6 @@ const PLAN = {
   prop_coins: { ratio: null, tex: 512, note: '铜钱串，桌上 18cm' },
   prop_incense: { ratio: null, tex: 512, note: '铜香炉，桌上 12cm' },
 
-  // 沉船宴会厅 —— 智能拓扑，面数本来就低。舷窗和栏板要复制多份，贴图压狠一点。
-  ship_porthole: { ratio: null, tex: 512, note: '侧墙 6 个实例，中景' },
-  ship_hatch: { ratio: null, tex: 1024, note: '玩家身后，近景，细节要留' },
-  ship_chandelier_sunk: { ratio: null, tex: 1024, note: '泡在水里，中近景' },
-  ship_balustrade: { ratio: null, tex: 512, note: '背景 5 段，远景' },
-
   // 沉船宴会厅 —— 全是智能拓扑，面数本来就低（3.8k–7.5k）。舷窗和笼灯在中景，
   // 舱门和栏板占画面高度但离得远，1K 到头；水面上的杂物只有巴掌大，512 够。
   ship_porthole: { ratio: null, tex: 512, note: '侧墙中景，直径 40cm' },
@@ -68,6 +62,14 @@ const PLAN = {
   ship_chair: { ratio: null, tex: 512, note: '翻倒的餐椅' },
   ship_caglamp: { ratio: null, tex: 512, note: '笼灯，35cm' },
   ship_service: { ratio: null, tex: 512, note: '漂在水面的餐盘' },
+
+  // 沉船陈设 —— 都是巴掌到半米的东西，512 够。瓶子的几何由
+  // scripts/fix-wreck-props.mjs 先接好再压。
+  wreck_clock: { ratio: null, tex: 512, note: '后墙船钟，停摆' },
+  wreck_plaque: { ratio: null, tex: 512, note: '船名铜牌' },
+  wreck_lifering: { ratio: null, tex: 512, note: '救生圈' },
+  wreck_hat: { ratio: null, tex: 512, note: '漂着的礼帽' },
+  wreck_bottle: { ratio: null, tex: 512, note: '漂着的酒瓶' },
 
   table_obsidian: { ratio: null, tex: 1024, note: '画面主体' },
   table_jade: { ratio: null, tex: 1024, note: '画面主体，玉的纹理要留' },
