@@ -1934,11 +1934,18 @@ function DyingLamp({ position, rotationY, seed, withLight }: {
   useFrame((state) => {
     const t = state.clock.getElapsedTime() + seed;
     // Mains failing, not a candle: mostly on, with sharp irregular dropouts.
-    const n = Math.sin(t * 11.3) * Math.sin(t * 4.1) * Math.sin(t * 23.7);
+    //
+    // Three sines multiplied — the product spends most of its time near zero and only
+    // occasionally swings wide, which is what gives the stutter its irregular spacing.
+    // Frequencies are mutually non-harmonic so the pattern never audibly repeats.
+    const n = Math.sin(t * 18.7) * Math.sin(t * 7.3) * Math.sin(t * 31.1);
+    // The threshold sets how OFTEN it drops, the floor sets how FAR. Dropping the
+    // threshold from -0.62 to -0.33 is what raises the rate: the product clears -0.33
+    // several times as often as it clears -0.62.
+    const on = n > -0.33 ? 1 : 0.4 + Math.abs(n) * 0.2;
     // Never fully out: a lamp that blinks to black takes the whole room's warm light with
-    // it several times a second, which is what made the lighting feel broken.
-    const on = n > -0.62 ? 1 : 0.42 + Math.abs(n) * 0.2;
-    const v = on * (0.82 + Math.sin(t * 2.3) * 0.18);
+    // it, and at this rate that would strobe.
+    const v = on * (0.82 + Math.sin(t * 3.7) * 0.18);
     if (light.current) light.current.intensity = v * 3.4;
     if (glow.current) glow.current.emissiveIntensity = v * 3.4;
   });
