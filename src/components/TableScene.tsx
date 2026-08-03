@@ -1462,6 +1462,189 @@ function Silt({ count = 70 }: { count?: number }) {
   );
 }
 
+// ————————————————————————— What's out there —————————————————————————
+//
+// The room read as empty in the middle distance: nothing between the table and the walls,
+// and a bare sheet of water. These fill that band. Everything here is procedural — the
+// point is motion, and motion is the one thing a generated model cannot bring.
+
+/** Soft-edged blob, for silhouettes that must never show an outline. */
+function makeBlobTexture(size = 128): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, 'rgba(0,0,0,1)');
+  g.addColorStop(0.45, 'rgba(0,0,0,0.85)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(c);
+}
+let blobCache: THREE.CanvasTexture | null = null;
+const blobTexture = () => (blobCache ??= makeBlobTexture());
+
+/**
+ * Something big goes past the glass. It never resolves — you get a darkening that slides
+ * across and is gone, and no confirmation of what it was.
+ *
+ * That refusal is the whole point, and it is also this game's subject: you never find out
+ * what is sitting opposite you either. A modelled creature would answer the question and
+ * kill it.
+ */
+function PassingShadow() {
+  const ref = useRef<THREE.Mesh>(null);
+  const mat = useRef<THREE.MeshBasicMaterial>(null);
+  const tex = useMemo(() => blobTexture(), []);
+  /** Seconds between passes, and how long one takes. Long gaps: it must feel like a thing
+   *  that happens TO you, not like a looping animation. */
+  const PERIOD = 38;
+  const CROSS = 7.5;
+
+  useFrame((state) => {
+    const m = ref.current;
+    if (!m || !mat.current) return;
+    const phase = (state.clock.getElapsedTime() + 9) % PERIOD;
+    if (phase > CROSS) { m.visible = false; return; }
+    m.visible = true;
+    const p = phase / CROSS;
+    m.position.x = -16 + p * 32;
+    m.position.y = 2.4 + Math.sin(p * Math.PI) * 0.9;
+    // Fades in and out at the edges of the pass, so it never has a start or an end.
+    mat.current.opacity = Math.sin(p * Math.PI) * 0.68;
+  });
+
+  return (
+    <mesh ref={ref} position={[-16, 2.4, -10.4]} visible={false}>
+      <planeGeometry args={[9, 3.4]} />
+      <meshBasicMaterial ref={mat} map={tex} color="#020a0c" transparent opacity={0} depthWrite={false} toneMapped={false} />
+    </mesh>
+  );
+}
+
+const FISH_DUMMY = new THREE.Object3D();
+
+/** A school beyond the glass. Pale, small, and always turning — the only living thing left. */
+function FishSchool({ count = 22 }: { count?: number }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const seeds = useMemo(() => Array.from({ length: count }, (_, i) => ({
+    r: 1.4 + ((i * 29) % 100) / 100 * 2.2,
+    a: (i / count) * Math.PI * 2,
+    y: 1.2 + ((i * 53) % 100) / 100 * 2.6,
+    z: -9.4 - ((i * 37) % 100) / 100 * 2.2,
+    speed: 0.22 + ((i * 19) % 100) / 100 * 0.16,
+    bob: ((i * 43) % 100) / 100 * 6,
+  })), [count]);
+
+  useFrame((state) => {
+    const m = ref.current;
+    if (!m) return;
+    const t = state.clock.getElapsedTime();
+    seeds.forEach((f, i) => {
+      const a = f.a + t * f.speed;
+      const x = Math.cos(a) * f.r * 2.2;
+      const y = f.y + Math.sin(t * 0.7 + f.bob) * 0.22;
+      FISH_DUMMY.position.set(x, y, f.z + Math.sin(a) * 0.8);
+      // Nose along the direction of travel.
+      FISH_DUMMY.rotation.set(0, -a + Math.PI / 2, Math.sin(t * 3 + f.bob) * 0.16);
+      FISH_DUMMY.scale.set(0.055, 0.03, 0.15);
+      FISH_DUMMY.updateMatrix();
+      m.setMatrixAt(i, FISH_DUMMY.matrix);
+    });
+    m.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
+      <octahedronGeometry args={[1, 0]} />
+      <meshBasicMaterial color="#a8ccc8" transparent opacity={0.5} toneMapped={false} depthWrite={false} />
+    </instancedMesh>
+  );
+}
+
+/** One jellyfish: a bell that pulses, and trails. Slow enough to be unsettling. */
+function Jelly({ x, z, y0, seed, scale }: { x: number; z: number; y0: number; seed: number; scale: number }) {
+  const bell = useRef<THREE.Mesh>(null);
+  const group = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime() + seed;
+    const g = group.current;
+    if (!g || !bell.current) return;
+    // Drifts up and wraps, like the silt.
+    g.position.y = ((y0 + t * 0.09) % 6.5) - 0.4;
+    g.position.x = x + Math.sin(t * 0.16) * 0.5;
+    // The pulse: a quick contraction, then a long relaxation. Not a sine — a sine reads
+    // as breathing, and this should read as swimming.
+    const p = (t * 0.42) % 1;
+    const squash = p < 0.25 ? 1 - Math.sin(p / 0.25 * Math.PI) * 0.28 : 1 - (1 - p) * 0.05;
+    bell.current.scale.set(scale * (2 - squash), scale * squash, scale * (2 - squash));
+  });
+  return (
+    <group ref={group} position={[x, y0, z]}>
+      <mesh ref={bell}>
+        <sphereGeometry args={[1, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.62]} />
+        <meshBasicMaterial color="#cfe8ff" transparent opacity={0.22} side={THREE.DoubleSide} depthWrite={false} toneMapped={false} />
+      </mesh>
+      {/* The faint light inside is what makes them read at this distance. */}
+      <mesh>
+        <sphereGeometry args={[scale * 0.42, 8, 6]} />
+        <meshBasicMaterial color="#8fd8ff" transparent opacity={0.3} toneMapped={false} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function Jellies() {
+  return (
+    <>
+      <Jelly x={-3.4} z={-9.8} y0={0.6} seed={0} scale={0.34} />
+      <Jelly x={2.1} z={-10.6} y0={3.2} seed={4.3} scale={0.26} />
+      <Jelly x={4.4} z={-9.2} y0={5.1} seed={8.1} scale={0.3} />
+    </>
+  );
+}
+
+/**
+ * The hand that was on the table when she went down, floating where it landed. Reuses
+ * CardMesh, so these are the same cards — including whatever back the player has bought.
+ */
+function DriftingCards() {
+  const group = useRef<THREE.Group>(null);
+  const cards = useMemo(() => ([
+    { x: -1.9, z: 2.6, type: 'citizen' as CardType, faceDown: false, rz: 0.4 },
+    { x: -2.6, z: 1.2, type: 'slave' as CardType, faceDown: true, rz: -0.9 },
+    { x: 3.1, z: 2.9, type: 'citizen' as CardType, faceDown: true, rz: 1.3 },
+    { x: 1.4, z: 3.6, type: 'emperor' as CardType, faceDown: false, rz: -0.3 },
+    { x: -4.1, z: -1.4, type: 'citizen' as CardType, faceDown: true, rz: 2.1 },
+    { x: 4.2, z: -0.6, type: 'citizen' as CardType, faceDown: false, rz: 0.8 },
+  ]), []);
+
+  useFrame((state) => {
+    const g = group.current;
+    if (!g) return;
+    const t = state.clock.getElapsedTime();
+    g.children.forEach((c, i) => {
+      c.position.y = WATER_Y + 0.006 + Math.sin(t * 0.5 + i * 1.7) * 0.011;
+      c.rotation.x = -Math.PI / 2 + Math.sin(t * 0.34 + i) * 0.045;
+    });
+  });
+
+  return (
+    <group ref={group}>
+      {cards.map((c, i) => (
+        <group
+          key={i}
+          position={[c.x, WATER_Y + 0.006, c.z]}
+          rotation={[-Math.PI / 2, c.faceDown ? Math.PI : 0, c.rz]}
+          scale={0.34}
+        >
+          <CardMesh type={c.type} castShadow={false} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
 function PromenadeGlass() {
   const depth = useMemo(() => depthTexture(), []);
   const w = GLASS_HALF * 2;
@@ -1479,6 +1662,9 @@ function PromenadeGlass() {
       </mesh>
 
       <Silt />
+      <FishSchool />
+      <Jellies />
+      <PassingShadow />
 
       {/* Two shafts coming down from the surface, far off. Angled apart so they don't read
           as a symmetrical pair of lamps. */}
@@ -3341,6 +3527,7 @@ function Scene({
           <FloodWater reflective={preset.reflectiveFloor} />
           <SunkenChandelier />
           <Adrift />
+          <DriftingCards />
           <Flotsam />
           {quality !== 'low' && <Caustics />}
           {/* Bounce off the surface — a cold uplight nothing else in the room provides. */}
