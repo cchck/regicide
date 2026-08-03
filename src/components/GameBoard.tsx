@@ -13,6 +13,7 @@ import { TUTORIAL_SCENES } from '@/lib/tutorial';
 import { audio } from '@/lib/audio';
 import CardArt from './CardArt';
 import type { CardBackId } from '@/lib/cardArt';
+import { MENU_CARDS, MENU_ORDER, MenuCardId } from '@/lib/menuCards';
 import TableScene, { Quality, DealerAction, FinaleKind, FINALE_TIMINGS, ViewMode } from './TableScene';
 import MatchReport, { useFinaleStage } from './MatchReport';
 import { useQuality } from '@/lib/device';
@@ -826,6 +827,14 @@ export default function GameBoard() {
     // waiting. Entering a mode that plays at THIS table glides the camera into the
     // seat first.
     const menuCam: ViewMode = sitting ? 'transition' : 'lobby';
+    const goto = (key: HubEntryKey) => {
+      if (sitting) return; // already on the way somewhere
+      if (key === 'tutorial') sitDown(() => startTutorialScene(0));
+      else if (key === 'duel') router.push('/pvp');
+      else if (key === 'dossier') router.push('/dossier');
+      else if (key === 'shop') router.push('/shop');
+      else router.push('/ledger');
+    };
     const menuScene = (
       <div className="fixed inset-0">
         <TableScene
@@ -839,6 +848,9 @@ export default function GameBoard() {
           pot={0}
           quality={quality}
           look={look}
+          // The menu is a hand of cards dealt inside the scene — there is no button dock.
+          // Suppressed during the sit-down glide so a stray click can't fire mid-transition.
+          onMenuPick={sitting ? null : (id) => goto(id as HubEntryKey)}
         />
       </div>
     );
@@ -849,13 +861,7 @@ export default function GameBoard() {
         <HubScreen
           tutorialDone={tutorialDone}
           sitting={sitting}
-          onEnter={(key) => {
-            if (key === 'tutorial') sitDown(() => startTutorialScene(0));
-            else if (key === 'duel') router.push('/pvp');
-            else if (key === 'dossier') router.push('/dossier');
-            else if (key === 'shop') router.push('/shop');
-            else router.push('/ledger');
-          }}
+          onEnter={goto}
         />
 
         {/* The buy-in can still fail on the way in (the balance moved, the network died).
@@ -1275,31 +1281,20 @@ export default function GameBoard() {
 // One 对战 door, not two. Whether the seat opposite holds a person or the house is a
 // detail of who happens to be awake — it isn't a mode the player should have to choose,
 // and making them choose it advertised "you are playing a bot" before a card was dealt.
-type HubEntryKey = 'tutorial' | 'duel' | 'dossier' | 'ledger' | 'shop';
+//
+// An alias rather than its own union: the destinations ARE the menu cards now, and two
+// hand-maintained lists would eventually disagree about which doors exist.
+type HubEntryKey = MenuCardId;
 
-const HUB_INK = {
-  teal: { text: '#3fb3b3', rgb: '63,179,179' },
-  blood: { text: '#e83a3a', rgb: '232,58,58' },
-  amber: { text: '#d8ab3c', rgb: '216,171,60' },
-} as const;
-
-// Art Deco corner-cut, the same chamfer the in-match dock and buttons use.
-const HUB_CLIP =
-  'polygon(14px 0,calc(100% - 14px) 0,100% 14px,100% calc(100% - 14px),calc(100% - 14px) 100%,14px 100%,0 calc(100% - 14px),0 14px)';
-
+/**
+ * The hub's DOM layer. It is now only the masthead, a hover label and an accessibility
+ * nav — the five destinations themselves are dealt as 3D cards by TableScene's MenuFan.
+ */
 function HubScreen({ tutorialDone, sitting, onEnter }: {
   tutorialDone: boolean;
   sitting: boolean;
   onEnter: (key: HubEntryKey) => void;
 }) {
-  const entries: { key: HubEntryKey; glyph: string; title: string; sub: string; ink: keyof typeof HUB_INK; flag?: boolean }[] = [
-    { key: 'tutorial', glyph: '习', title: '新手引导', sub: '三幕入局 · 五分钟', ink: 'teal', flag: !tutorialDone },
-    { key: 'duel', glyph: '决', title: '对 战', sub: '匹配入座 · 约人开桌', ink: 'blood' },
-    { key: 'dossier', glyph: '档', title: '密 档', sub: '你的出牌倾向', ink: 'amber' },
-    { key: 'ledger', glyph: '榜', title: '血 榜', sub: '谁主宰这座大厅', ink: 'amber' },
-    { key: 'shop', glyph: '铺', title: '当 铺', sub: '给这间房换个排面', ink: 'amber' },
-  ];
-
   return (
     // `fixed`, not `absolute`: the scene layer beneath is fixed and the tree has no
     // positioned ancestor, so the two would otherwise resolve against different
@@ -1327,78 +1322,42 @@ function HubScreen({ tutorialDone, sitting, onEnter }: {
           <Flourish flip />
         </div>
       </div>
-
-      {/* Floor haze — gives the cards something to sit against without a hard band */}
+      {/* Floor haze — the cards need something to sit against without a hard band */}
       <div className="absolute bottom-0 inset-x-0 h-56 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
 
-      {/* The dock. Centring lives on THIS flex row, never on a child's max-w + mx-auto —
-          the containing-block mismatch above defeats the latter. pt-4 leaves room for the
-          "从这里开始" flag to sit above the first card instead of being clipped, and the
-          fixed max width keeps the row clear of the settings gear in the corner. */}
-      <div className="absolute bottom-12 inset-x-0 flex justify-center px-6 pt-4 pointer-events-auto">
-        <div className="flex justify-center gap-3 sm:gap-5 w-full max-w-[860px]">
-          {entries.map((e, i) => {
-            const ink = HUB_INK[e.ink];
-            return (
-              <button
-                key={e.key}
-                type="button"
-                onClick={() => { if (!sitting) onEnter(e.key); }}
-                className="group relative flex-1 text-center px-2 pt-7 pb-5 transition-all duration-300 hover:-translate-y-1.5 active:translate-y-0 fade-in-up"
-                style={{
-                  clipPath: HUB_CLIP,
-                  background: 'linear-gradient(180deg, rgba(20,18,14,0.88) 0%, rgba(6,6,10,0.92) 100%)',
-                  boxShadow: `inset 0 0 0 1px rgba(${ink.rgb},0.22), 0 14px 30px rgba(0,0,0,0.6)`,
-                  backdropFilter: 'blur(4px)',
-                  animationDelay: `${200 + i * 80}ms`,
-                }}
-              >
-                {/* Colour rule across the top — the card's identity, brightening on hover */}
-                <span
-                  className="absolute top-0 inset-x-0 h-[2px] transition-all duration-300 pointer-events-none"
-                  style={{
-                    background: `linear-gradient(to right, transparent, rgba(${ink.rgb},0.9), transparent)`,
-                    boxShadow: `0 0 10px rgba(${ink.rgb},0.5)`,
-                  }}
-                />
-                {/* Warm wash rising on hover */}
-                <span
-                  className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-                  style={{ background: `linear-gradient(to top, rgba(${ink.rgb},0.14) 0%, transparent 65%)` }}
-                />
-                {/* Hairline inner frame, revealed on hover */}
-                <span
-                  className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-                  style={{ inset: '5px', clipPath: HUB_CLIP, border: `1px solid rgba(${ink.rgb},0.35)` }}
-                />
-
-                {e.flag && (
-                  <span
-                    className="absolute -top-3 left-1/2 -translate-x-1/2 text-[9px] tracking-[3px] font-display px-2.5 py-[3px] whitespace-nowrap z-20"
-                    style={{
-                      color: ink.text,
-                      border: `1px solid rgba(${ink.rgb},0.6)`,
-                      background: '#07070c',
-                      animation: 'pulse-glow 2s ease-in-out infinite',
-                    }}
-                  >
-                    从这里开始
-                  </span>
-                )}
-
-                <p
-                  className="relative font-gothic text-[2.6rem] sm:text-5xl leading-none mb-3.5 transition-transform duration-300 group-hover:scale-110"
-                  style={{ color: ink.text, textShadow: `0 0 24px rgba(${ink.rgb},0.55)` }}
-                >
-                  {e.glyph}
-                </p>
-                <p className="relative font-display font-bold text-sm tracking-[3px] text-text-bright whitespace-nowrap">{e.title}</p>
-                <p className="relative text-[10px] tracking-[2px] text-text-muted font-display mt-1.5 whitespace-nowrap hidden sm:block">{e.sub}</p>
-              </button>
-            );
-          })}
+      {/* First visit: say the cards are pickable. A fan is not as self-evidently clickable
+          as a row of buttons was, and this is the one place that trade-off has to be paid. */}
+      {!tutorialDone && (
+        <div className="absolute bottom-[7%] inset-x-0 text-center">
+          <p
+            className="text-[11px] tracking-[5px] text-amber font-display inline-block px-3 py-1"
+            style={{ animation: 'pulse-glow 2.4s ease-in-out infinite' }}
+          >
+            翻开一张牌
+          </p>
         </div>
-      </div>
+      )}
+
+      {/* The fan lives in WebGL, so it is invisible to a keyboard and to a screen reader.
+          These are the same five destinations as real focusable buttons. Without them the
+          hub is simply unusable without a mouse.
+          `focus-within:not-sr-only` matters: a bare sr-only nav means a sighted keyboard
+          user tabs into five controls they cannot see. Focus brings the strip on screen. */}
+      <nav
+        aria-label="大厅"
+        className="sr-only focus-within:not-sr-only focus-within:absolute focus-within:bottom-6 focus-within:inset-x-0 focus-within:z-30 focus-within:flex focus-within:justify-center focus-within:gap-2 pointer-events-auto"
+      >
+        {MENU_ORDER.map((id: MenuCardId) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onEnter(id as HubEntryKey)}
+            className="px-4 py-2 border border-amber/60 bg-black/90 text-text-bright text-sm tracking-[3px] font-display focus:outline-none focus:border-amber-bright focus:text-amber-bright"
+          >
+            {MENU_CARDS[id].name}
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }

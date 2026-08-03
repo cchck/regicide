@@ -5,6 +5,7 @@ import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { CardType } from '@/lib/types';
 import { cardSvgDataUrl, cardBackSvgDataUrl, CardBackId } from '@/lib/cardArt';
+import { menuCardSvgDataUrl, MenuCardId } from '@/lib/menuCards';
 
 const CARD_W = 0.72;
 const CARD_H = 1.0;
@@ -67,6 +68,7 @@ function getTexture(key: string, svgUrl: () => string): THREE.CanvasTexture {
 
 const faceTexture = (type: CardType) => getTexture('face:' + type, () => cardSvgDataUrl(type));
 const backTexture = (id: CardBackId) => getTexture('back:' + id, () => cardBackSvgDataUrl(id));
+const menuTexture = (id: MenuCardId) => getTexture('menu:' + id, () => menuCardSvgDataUrl(id));
 
 /**
  * Which back the player is holding. A context rather than a prop because the cards are
@@ -463,6 +465,45 @@ export function CardMesh({ type, castShadow = true }: {
   return (
     <group>
       <mesh castShadow={castShadow} receiveShadow geometry={getBodyGeometry()}>
+        <primitive object={getEdgeMaterial(backId)} attach="material" />
+      </mesh>
+      <mesh position={[0, 0, CARD_T / 2 + 0.0012]}>
+        <planeGeometry args={[CARD_W, CARD_H]} />
+        <primitive object={frontMat} attach="material" />
+      </mesh>
+      <mesh position={[0, 0, -CARD_T / 2 - 0.0012]} rotation={[0, Math.PI, 0]}>
+        <planeGeometry args={[CARD_W, CARD_H]} />
+        <primitive object={backMat} attach="material" />
+      </mesh>
+    </group>
+  );
+}
+
+/**
+ * A hub menu card. Same body, same edge, same back as a real playing card — only the face
+ * differs — so the fan you pick a destination from is physically the same deck you play
+ * with. It wears the equipped card back too, which means the thing you bought in the shop
+ * is the first thing on screen.
+ */
+export function MenuCardMesh({ faceId }: { faceId: MenuCardId }) {
+  const backId = useContext(CardBackContext);
+  const finish = BACK_FINISH[backId] ?? BACK_FINISH['cardBack.house'];
+
+  const frontMat = useMemo(() => new THREE.MeshStandardMaterial({
+    map: menuTexture(faceId), transparent: true, roughness: 0.45, metalness: 0.05,
+    emissive: IDLE_EMISSIVE, emissiveIntensity: IDLE_EMISSIVE_INTENSITY,
+  }), [faceId]);
+  const backMat = useMemo(() => new THREE.MeshStandardMaterial({
+    map: backTexture(backId), transparent: true,
+    roughness: finish.roughness, metalness: finish.metalness,
+    emissive: IDLE_EMISSIVE, emissiveIntensity: IDLE_EMISSIVE_INTENSITY,
+  }), [backId, finish]);
+
+  useEffect(() => () => { frontMat.dispose(); backMat.dispose(); }, [frontMat, backMat]);
+
+  return (
+    <group>
+      <mesh castShadow={false} geometry={getBodyGeometry()}>
         <primitive object={getEdgeMaterial(backId)} attach="material" />
       </mesh>
       <mesh position={[0, 0, CARD_T / 2 + 0.0012]}>

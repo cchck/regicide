@@ -12,7 +12,8 @@ import { CardType } from '@/lib/types';
 import { useIsTouch } from '@/lib/device';
 import { normalizeLoadout, type Loadout } from '@/lib/shop';
 import { audio } from '@/lib/audio';
-import PlayedCard, { CardMesh, CardBackContext } from './Card3D';
+import PlayedCard, { CardMesh, MenuCardMesh, CardBackContext } from './Card3D';
+import { MENU_ORDER, MenuCardId } from '@/lib/menuCards';
 import type { CardBackId } from '@/lib/cardArt';
 import ChipEconomy from './Chips3D';
 
@@ -362,6 +363,9 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
   const touch = useIsTouch();
   // If the card unmounts mid-hover (it just got played), don't leave a stuck pointer cursor.
   useEffect(() => () => { document.body.style.cursor = 'auto'; }, []);
+  // Hidden until its deal beat. Set here rather than as a JSX `visible={false}`, which the
+  // reconciler could stamp back over the animation on an incidental re-render.
+  useEffect(() => { if (group.current) group.current.visible = false; }, []);
 
   const off = index - (count - 1) / 2;
   // A finger needs more room than a cursor: spread the fan wider on touch so neighbouring
@@ -403,6 +407,128 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
           <planeGeometry args={[1.35, 1.9]} />
         </mesh>
       )}
+    </group>
+  );
+}
+
+// ————————————————————————— The hub's menu, as a hand —————————————————————————
+//
+// Replaces the old dock of five buttons. That dock was five identical tiles of equal
+// weight pasted across the bottom of the render: no hierarchy (对战 looked exactly as
+// important as 血榜, though it's what nearly every visit is for) and it cut the table's
+// gold rim in half. Rearranging it didn't help, because a strip of buttons over a 3D room
+// is the problem.
+//
+// So: the dealer deals you five. Taking one is how you go somewhere — the same gesture as
+// playing a card, learned before the first chip is down, with no UI chrome at all.
+//
+// Dealt FACE DOWN and flipped on hover. That shows off the card back the player bought,
+// and it makes the hub an act rather than a list.
+
+const MENU_DEAL_STAGGER = 0.085;
+
+function MenuFanCard({ id, index, count, onPick }: {
+  id: MenuCardId;
+  index: number;
+  count: number;
+  onPick: (id: MenuCardId) => void;
+}) {
+  const group = useRef<THREE.Group>(null);
+  const [hovered, setHovered] = useState(false);
+  const touch = useIsTouch();
+  const born = useRef<number | null>(null);
+  const hero = id === 'duel';
+
+  useEffect(() => () => { document.body.style.cursor = 'auto'; }, []);
+
+  const off = index - (count - 1) / 2;
+  // Wider than the in-match fan: these carry readable names, and on touch each one needs
+  // its own comfortable target.
+  const spread = touch ? 0.185 : 0.152;
+  // The duel card is dealt last, so it lands on top of the others.
+  const dealAt = (hero ? count - 1 : index < count / 2 ? index : index - 1) * MENU_DEAL_STAGGER;
+
+  useFrame((state, delta) => {
+    const g = group.current;
+    if (!g) return;
+    const now = state.clock.getElapsedTime();
+    if (born.current === null) born.current = now;
+    const age = now - born.current - dealAt;
+
+    const k = 1 - Math.exp(-delta * 9);
+    const lift = (hovered ? 0.055 : 0) + (hero ? 0.032 : 0);
+    const tx = off * spread;
+    const ty = -0.34 + lift - Math.abs(off) * 0.016;
+    const tz = -0.8 + (hero ? 0.03 : index * 0.006) + (hovered ? 0.05 : 0);
+
+    if (age < 0) {
+      // Still in the dealer's hand: parked off the top of the frame, unseen.
+      g.visible = false;
+      g.position.set(0, 0.55, -1.5);
+      return;
+    }
+    g.visible = true;
+    g.position.x += (tx - g.position.x) * k;
+    g.position.y += (ty - g.position.y) * k;
+    g.position.z += (tz - g.position.z) * k;
+
+    const rz = -off * 0.13;
+    g.rotation.z += (rz - g.rotation.z) * k;
+    // Face down until you look at it. π → 0.
+    const ry = hovered ? 0 : Math.PI;
+    g.rotation.y += (ry - g.rotation.y) * (1 - Math.exp(-delta * 11));
+    // Tips up toward the camera as it turns over.
+    g.rotation.x += ((-0.18 - (hovered ? 0.1 : 0)) - g.rotation.x) * k;
+  });
+
+  // Hover state stays LOCAL to the card. Lifting it into GameBoard so a DOM label could
+  // read it re-rendered the whole scene on every mouse move — and the label was redundant
+  // anyway, because the card face has its own name printed on it.
+  const enter = () => { setHovered(true); document.body.style.cursor = 'pointer'; };
+  const leave = () => { setHovered(false); document.body.style.cursor = 'auto'; };
+
+  return (
+    <group
+      ref={group}
+      position={[0, 0.55, -1.5]}
+      rotation={[-0.18, Math.PI, 0]}
+      scale={0.26}
+      onClick={(e) => {
+        e.stopPropagation();
+        // On touch there is no hover, so the first tap turns the card over and the second
+        // takes it — you always see what you're choosing before you choose it.
+        if (touch && !hovered) { enter(); return; }
+        onPick(id);
+      }}
+      onPointerOver={touch ? undefined : (e) => { e.stopPropagation(); enter(); }}
+      onPointerOut={touch ? undefined : leave}
+    >
+      <MenuCardMesh faceId={id} />
+      {/* The duel card keeps a low ember on it even face-down, so the eye lands there. */}
+      {hero && (
+        <pointLight position={[0, 0, 0.5]} color="#ff2a2a" intensity={hovered ? 1.6 : 0.7} distance={1.4} decay={2} />
+      )}
+      {touch && (
+        <mesh position={[0, 0, 0.03]} visible={false}>
+          <planeGeometry args={[1.5, 2.05]} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+function MenuFan({ onPick }: { onPick: (id: MenuCardId) => void }) {
+  return (
+    <group>
+      {MENU_ORDER.map((id, i) => (
+        <MenuFanCard
+          key={id}
+          id={id}
+          index={i}
+          count={MENU_ORDER.length}
+          onPick={onPick}
+        />
+      ))}
     </group>
   );
 }
@@ -2324,6 +2450,7 @@ interface SceneProps {
   finale: FinaleKind | null;
   viewMode: ViewMode;
   look: Loadout;
+  onMenuPick: ((id: MenuCardId) => void) | null;
 }
 
 function Scene({
@@ -2331,7 +2458,7 @@ function Scene({
   hand, selectedIndex, canSelect, onSelectCard,
   playerChips, opponentChips, pot, revealCeremony, playerGlow, opponentGlow, quality,
   playerSetsWon, opponentSetsWon, hintCard, showOpponent, opponentEyeColor, dealerAction, finale, viewMode,
-  look,
+  look, onMenuPick,
 }: SceneProps) {
   const preset = QUALITY_PRESETS[quality];
   const spot = useRef<THREE.SpotLight>(null);
@@ -2470,6 +2597,14 @@ function Scene({
             <pointLight position={[0, 0.15, -0.35]} intensity={1.1} distance={2} decay={2} color="#e8d8b0" />
           </>
         )}
+        {/* The hub menu rides the same rig as a real hand, so it sits in front of the
+            viewer at whatever angle the lobby camera is at. */}
+        {onMenuPick && (
+          <>
+            <MenuFan onPick={onMenuPick} />
+            <pointLight position={[0, 0.1, -0.4]} intensity={1.3} distance={2.2} decay={2} color="#e8d8b0" />
+          </>
+        )}
       </FirstPersonRig>
 
       {opponentCard && (
@@ -2549,6 +2684,8 @@ interface TableSceneProps {
   viewMode?: ViewMode;
   /** Equipped cosmetics. Partial is fine — missing slots fall back to the free defaults. */
   look?: Partial<Loadout>;
+  /** Non-null deals the hub's menu hand. The hub has no button dock; this is it. */
+  onMenuPick?: ((id: MenuCardId) => void) | null;
 }
 
 const noop = () => {};
@@ -2621,6 +2758,7 @@ export default function TableScene({
   finale = null,
   viewMode = 'seated',
   look,
+  onMenuPick = null,
 }: TableSceneProps) {
   const preset = QUALITY_PRESETS[quality];
   return (
@@ -2666,6 +2804,7 @@ export default function TableScene({
           finale={finale}
           viewMode={viewMode}
           look={normalizeLoadout(look)}
+          onMenuPick={onMenuPick ?? null}
         />
         </Suspense>
       </Canvas>
