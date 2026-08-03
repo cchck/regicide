@@ -436,17 +436,29 @@ const FAN_Z = -0.86;
 // other's depth slice and the sort order between them was a coin flip every frame.
 const FAN_GAP = 0.022;
 
-function MenuFanCard({ id, index, count, onPick }: {
+/** The featured card's ember, keyed to that card's own ink. */
+const FEATURE_LIGHT: Partial<Record<MenuCardId, string>> = {
+  duel: '#ff2a2a',
+  tutorial: '#3fb3b3',
+};
+
+function MenuFanCard({ id, index, count, featured, onPick }: {
   id: MenuCardId;
   index: number;
   count: number;
+  /**
+   * The one card the eye should land on: normally 对战, but 新手引导 until it's done.
+   * It sits higher, comes forward, and is the only card with any light on it — the rest
+   * stay dark, which is what makes it read as a pointer rather than as decoration.
+   */
+  featured: boolean;
   onPick: (id: MenuCardId) => void;
 }) {
   const group = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
   const touch = useIsTouch();
   const born = useRef<number | null>(null);
-  const hero = id === 'duel';
+  const hero = featured;
 
   useEffect(() => () => { document.body.style.cursor = 'auto'; }, []);
 
@@ -481,8 +493,8 @@ function MenuFanCard({ id, index, count, onPick }: {
     const age = now - born.current - dealAt;
 
     const k = 1 - Math.exp(-delta * 9);
-    const lift = (hovered ? 0.055 : 0) + (hero ? 0.032 : 0);
-    const tz = restZ + (hero ? 0.02 : 0) + (hovered ? 0.06 : 0);
+    const lift = (hovered ? 0.055 : 0) + (hero ? 0.062 : 0);
+    const tz = restZ + (hero ? 0.05 : 0) + (hovered ? 0.06 : 0);
 
     if (age < 0) {
       // Still in the dealer's hand: parked off the top of the frame, unseen.
@@ -543,16 +555,30 @@ function MenuFanCard({ id, index, count, onPick }: {
         raycast={() => null}
       >
         <MenuCardMesh faceId={id} />
-        {/* The duel card keeps a low ember on it even face-down, so the eye lands there. */}
+        {/* The only light in the fan. Everything else stays dark, so this is the card the
+            eye finds first — even face-down, even before the deal has finished. */}
         {hero && (
-          <pointLight position={[0, 0, 0.5]} color="#ff2a2a" intensity={hovered ? 1.6 : 0.7} distance={1.4} decay={2} />
+          <pointLight
+            position={[0, 0, 0.5]}
+            color={FEATURE_LIGHT[id] ?? '#ff2a2a'}
+            intensity={hovered ? 1.9 : 1.0}
+            distance={1.5}
+            decay={2}
+          />
         )}
       </group>
     </>
   );
 }
 
-function MenuFan({ onPick }: { onPick: (id: MenuCardId) => void }) {
+function MenuFan({ tutorialDone, onPick }: {
+  tutorialDone: boolean;
+  onPick: (id: MenuCardId) => void;
+}) {
+  // Until the tutorial is done it is the card being pointed at; after that the spotlight
+  // goes back to 对战, which is what nearly every later visit is for. The old dock had a
+  // "从这里开始" tag doing this job; a lit card does it without any UI.
+  const featuredId: MenuCardId = tutorialDone ? 'duel' : 'tutorial';
   return (
     <group>
       {MENU_ORDER.map((id, i) => (
@@ -561,6 +587,7 @@ function MenuFan({ onPick }: { onPick: (id: MenuCardId) => void }) {
           id={id}
           index={i}
           count={MENU_ORDER.length}
+          featured={id === featuredId}
           onPick={onPick}
         />
       ))}
@@ -2486,6 +2513,7 @@ interface SceneProps {
   viewMode: ViewMode;
   look: Loadout;
   onMenuPick: ((id: MenuCardId) => void) | null;
+  menuTutorialDone: boolean;
 }
 
 function Scene({
@@ -2493,7 +2521,7 @@ function Scene({
   hand, selectedIndex, canSelect, onSelectCard,
   playerChips, opponentChips, pot, revealCeremony, playerGlow, opponentGlow, quality,
   playerSetsWon, opponentSetsWon, hintCard, showOpponent, opponentEyeColor, dealerAction, finale, viewMode,
-  look, onMenuPick,
+  look, onMenuPick, menuTutorialDone,
 }: SceneProps) {
   const preset = QUALITY_PRESETS[quality];
   const spot = useRef<THREE.SpotLight>(null);
@@ -2636,7 +2664,7 @@ function Scene({
             viewer at whatever angle the lobby camera is at. */}
         {onMenuPick && (
           <>
-            <MenuFan onPick={onMenuPick} />
+            <MenuFan tutorialDone={menuTutorialDone} onPick={onMenuPick} />
             <pointLight position={[0, 0.1, -0.4]} intensity={1.3} distance={2.2} decay={2} color="#e8d8b0" />
           </>
         )}
@@ -2721,6 +2749,8 @@ interface TableSceneProps {
   look?: Partial<Loadout>;
   /** Non-null deals the hub's menu hand. The hub has no button dock; this is it. */
   onMenuPick?: ((id: MenuCardId) => void) | null;
+  /** Drives which menu card is lit. Ignored unless `onMenuPick` is set. */
+  menuTutorialDone?: boolean;
 }
 
 const noop = () => {};
@@ -2794,6 +2824,7 @@ export default function TableScene({
   viewMode = 'seated',
   look,
   onMenuPick = null,
+  menuTutorialDone = true,
 }: TableSceneProps) {
   const preset = QUALITY_PRESETS[quality];
   return (
@@ -2840,6 +2871,7 @@ export default function TableScene({
           viewMode={viewMode}
           look={normalizeLoadout(look)}
           onMenuPick={onMenuPick ?? null}
+          menuTutorialDone={menuTutorialDone}
         />
         </Suspense>
       </Canvas>

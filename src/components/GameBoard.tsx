@@ -851,6 +851,7 @@ export default function GameBoard() {
           // The menu is a hand of cards dealt inside the scene — there is no button dock.
           // Suppressed during the sit-down glide so a stray click can't fire mid-transition.
           onMenuPick={sitting ? null : (id) => goto(id as HubEntryKey)}
+          menuTutorialDone={tutorialDone}
         />
       </div>
     );
