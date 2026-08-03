@@ -1089,9 +1089,13 @@ function Caustics() {
     const ma = matA.map, mb = matB.map;
     if (ma) ma.offset.set(t * 0.021, t * 0.013);
     if (mb) mb.offset.set(-t * 0.014, t * 0.019);
-    // A slow swell in brightness, as if the surface above were rolling.
-    matA.opacity = 0.38 + Math.sin(t * 0.5) * 0.12;
-    matB.opacity = 0.26 + Math.sin(t * 0.37 + 2) * 0.09;
+    // A swell in brightness, but a shallow one. This used to range 0.26–0.50, a 2:1 swing
+    // that made the water light look like it was switching on and off — and with the
+    // bulkhead lamps stuttering at the same time, the two read as one unstable effect
+    // rather than as water. The drifting UVs already carry the motion; brightness only has
+    // to breathe.
+    matA.opacity = 0.46 + Math.sin(t * 0.5) * 0.05;
+    matB.opacity = 0.3 + Math.sin(t * 0.37 + 2) * 0.04;
   });
 
   const y = WALL_H + FLOOR_Y - 0.06;
@@ -1388,6 +1392,143 @@ function Adrift() {
   );
 }
 
+// ————————————————————————— The promenade glass —————————————————————————
+//
+// Portholes weren't enough. They read as "old building with round windows" — you can only
+// tell a room is underwater if you can SEE the water, and 45cm of dark glass six metres
+// away shows you nothing.
+//
+// So the back wall opens onto the promenade deck, and the promenade is flooded: a wall of
+// glass with the sea standing behind it, lit from far above. It also does the composition a
+// favour — the dealer now sits silhouetted against it.
+
+const GLASS_HALF = 4.6;
+const GLASS_BOT = 0.45;
+const GLASS_TOP = 4.5;
+const GLASS_Z = -8.16;
+
+/** Depth gradient for the water beyond: paler up top where the surface is, black below. */
+function makeDepthTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 128;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createLinearGradient(0, 0, 0, 128);
+  g.addColorStop(0, '#2c7d86');
+  g.addColorStop(0.35, '#12454e');
+  g.addColorStop(0.75, '#08222a');
+  g.addColorStop(1, '#040e13');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 128);
+  return new THREE.CanvasTexture(c);
+}
+let depthTexCache: THREE.CanvasTexture | null = null;
+const depthTexture = () => (depthTexCache ??= makeDepthTexture());
+
+const SILT_DUMMY = new THREE.Object3D();
+
+/** Silt and bubbles hanging in the water beyond the glass. Instanced; drifts upward. */
+function Silt({ count = 70 }: { count?: number }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const seeds = useMemo(() => Array.from({ length: count }, (_, i) => ({
+    x: (((i * 37) % 100) / 100 - 0.5) * 11,
+    y: ((i * 61) % 100) / 100 * 7 - 0.5,
+    z: -8.6 - ((i * 23) % 100) / 100 * 3.4,
+    s: 0.012 + ((i * 17) % 100) / 100 * 0.028,
+    rise: 0.05 + ((i * 41) % 100) / 100 * 0.12,
+    sway: ((i * 13) % 100) / 100 * 2,
+  })), [count]);
+
+  useFrame((state) => {
+    const m = ref.current;
+    if (!m) return;
+    const t = state.clock.getElapsedTime();
+    seeds.forEach((p, i) => {
+      // Wraps back to the bottom rather than being respawned — no allocation, no popping
+      // anywhere the eye is actually looking.
+      const y = ((p.y + t * p.rise) % 7.5) - 0.5;
+      SILT_DUMMY.position.set(p.x + Math.sin(t * 0.3 + p.sway) * 0.25, y, p.z);
+      SILT_DUMMY.scale.setScalar(p.s);
+      SILT_DUMMY.updateMatrix();
+      m.setMatrixAt(i, SILT_DUMMY.matrix);
+    });
+    m.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
+      <sphereGeometry args={[1, 5, 4]} />
+      <meshBasicMaterial color="#9fdce0" transparent opacity={0.3} toneMapped={false} depthWrite={false} />
+    </instancedMesh>
+  );
+}
+
+function PromenadeGlass() {
+  const depth = useMemo(() => depthTexture(), []);
+  const w = GLASS_HALF * 2;
+  const h = GLASS_TOP - GLASS_BOT;
+  const cy = (GLASS_BOT + GLASS_TOP) / 2;
+
+  return (
+    <group>
+      {/* The sea, standing in the flooded promenade. Unlit on purpose: this is meant to be
+          the brightest thing in the room, and a lit surface here would just go black like
+          everything else. */}
+      <mesh position={[0, cy + 0.6, -11.6]}>
+        <planeGeometry args={[26, 15]} />
+        <meshBasicMaterial map={depth} toneMapped={false} />
+      </mesh>
+
+      <Silt />
+
+      {/* Two shafts coming down from the surface, far off. Angled apart so they don't read
+          as a symmetrical pair of lamps. */}
+      {[[-2.6, 0.09], [3.1, -0.07]].map(([x, tilt], i) => (
+        <mesh key={i} position={[x, cy + 1.4, -10.2]} rotation={[0, 0, tilt]}>
+          <planeGeometry args={[1.5, 13]} />
+          <meshBasicMaterial color="#8fe4ea" transparent opacity={0.055} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+        </mesh>
+      ))}
+
+      {/* The glass itself — barely there, but it catches the room's light and that edge is
+          what tells you there is a barrier rather than open water. */}
+      <mesh position={[0, cy, GLASS_Z]}>
+        <planeGeometry args={[w, h]} />
+        <meshStandardMaterial color="#7fb6bd" transparent opacity={0.1} roughness={0.08} metalness={0.4} depthWrite={false} />
+      </mesh>
+
+      {/* Brass glazing bars. The grid is what gives the wall its scale — without it the
+          opening reads as a hole rather than as a window. */}
+      {[-2.3, 0, 2.3].map((x) => (
+        <mesh key={'v' + x} position={[x, cy, GLASS_Z + 0.03]}>
+          <boxGeometry args={[0.09, h, 0.09]} />
+          <meshStandardMaterial {...BRASS_MAT} />
+        </mesh>
+      ))}
+      {[1.5, 2.9].map((y) => (
+        <mesh key={'h' + y} position={[0, y, GLASS_Z + 0.03]}>
+          <boxGeometry args={[w, 0.08, 0.09]} />
+          <meshStandardMaterial {...BRASS_MAT} />
+        </mesh>
+      ))}
+      {/* Frame */}
+      <mesh position={[0, GLASS_TOP, GLASS_Z + 0.04]}>
+        <boxGeometry args={[w + 0.3, 0.18, 0.16]} />
+        <meshStandardMaterial {...BRASS_MAT} />
+      </mesh>
+      <mesh position={[0, GLASS_BOT, GLASS_Z + 0.04]}>
+        <boxGeometry args={[w + 0.3, 0.18, 0.16]} />
+        <meshStandardMaterial {...BRASS_MAT} />
+      </mesh>
+      {([-1, 1] as const).map((side) => (
+        <mesh key={'f' + side} position={[side * GLASS_HALF, cy, GLASS_Z + 0.04]}>
+          <boxGeometry args={[0.18, h, 0.16]} />
+          <meshStandardMaterial {...BRASS_MAT} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function DrownedRoom() {
   const wallH = WALL_H;
   const wallY = wallH / 2 + FLOOR_Y;
@@ -1399,6 +1540,7 @@ function DrownedRoom() {
       )}
       <BulkheadHatch />
       <GrandStairRail />
+      <PromenadeGlass />
       {/* Plate walls */}
       <mesh position={[-7.2, wallY, -2]} rotation={[0, Math.PI / 2, 0]}>
         <planeGeometry args={[18, wallH]} />
@@ -1408,10 +1550,22 @@ function DrownedRoom() {
         <planeGeometry args={[18, wallH]} />
         <meshStandardMaterial {...STEEL_MAT} />
       </mesh>
-      <mesh position={[0, wallY, -8.2]}>
-        <planeGeometry args={[16, wallH]} />
+      {/* Back wall, built as a surround: the middle is cut out for the promenade glass.
+          A solid plate here is what kept the room reading as a basement. */}
+      <mesh position={[0, (GLASS_TOP + FLOOR_Y + wallH) / 2, -8.2]}>
+        <planeGeometry args={[16, FLOOR_Y + wallH - GLASS_TOP]} />
         <meshStandardMaterial {...STEEL_MAT} />
       </mesh>
+      <mesh position={[0, (FLOOR_Y + GLASS_BOT) / 2, -8.2]}>
+        <planeGeometry args={[16, GLASS_BOT - FLOOR_Y]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+      {([-1, 1] as const).map((side) => (
+        <mesh key={'bw' + side} position={[side * (GLASS_HALF + (8 - GLASS_HALF) / 2), (GLASS_BOT + GLASS_TOP) / 2, -8.2]}>
+          <planeGeometry args={[16 - GLASS_HALF * 2, GLASS_TOP - GLASS_BOT]} />
+          <meshStandardMaterial {...STEEL_MAT} />
+        </mesh>
+      ))}
       <mesh position={[0, wallY, 7.5]} rotation={[0, Math.PI, 0]}>
         <planeGeometry args={[16, wallH]} />
         <meshStandardMaterial {...STEEL_MAT} />
@@ -1528,7 +1682,9 @@ function DyingLamp({ position, rotationY, seed, withLight }: {
     const t = state.clock.getElapsedTime() + seed;
     // Mains failing, not a candle: mostly on, with sharp irregular dropouts.
     const n = Math.sin(t * 11.3) * Math.sin(t * 4.1) * Math.sin(t * 23.7);
-    const on = n > -0.55 ? 1 : 0.08 + Math.abs(n) * 0.1;
+    // Never fully out: a lamp that blinks to black takes the whole room's warm light with
+    // it several times a second, which is what made the lighting feel broken.
+    const on = n > -0.62 ? 1 : 0.42 + Math.abs(n) * 0.2;
     const v = on * (0.82 + Math.sin(t * 2.3) * 0.18);
     if (light.current) light.current.intensity = v * 3.4;
     if (glow.current) glow.current.emissiveIntensity = v * 3.4;
@@ -3170,8 +3326,10 @@ function Scene({
             <RoyalBanner x={1.95} />
           </>
         )}
-        {drowned && <DistantColumns />}
-        <Railing />
+        {/* The salon's round columns and its balcony rail belong to that room, not
+            this one — a liner's saloon has frames and stanchions, not free-standing
+            classical columns. */}
+        {!drowned && <Railing />}
         {/* Two reflectors would mean rendering the whole scene three times a frame, and
             the floor is under the water here anyway — nobody can see it. */}
         <Floor reflective={preset.reflectiveFloor && !drowned} />
