@@ -427,9 +427,9 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
 
 const MENU_DEAL_STAGGER = 0.085;
 
-// Camera-local rest pose for the fan. Y was -0.34, which put the bottom third of every
-// card below the frame — the glyph read but the name under it was cut off.
-const FAN_Y = -0.2;
+// Camera-local rest pose for the fan. -0.34 cut the bottom third of every card off the
+// frame; -0.2 overshot and left them floating. Split the difference.
+const FAN_Y = -0.27;
 const FAN_Z = -0.86;
 // Separation between neighbours along the view axis. This was 0.006, barely more than a
 // card's own thickness (0.022 × 0.26 scale ≈ 0.0057), so overlapping faces sat inside each
