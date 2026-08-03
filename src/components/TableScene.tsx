@@ -1338,6 +1338,56 @@ function SunkenChandelier() {
   );
 }
 
+/**
+ * What came loose. Like the chandelier these sit OUTSIDE the tilted group — they float, so
+ * they answer to the water, not to the ship. That contrast is what makes the list legible:
+ * the eye compares level objects against canted architecture and reads "she's over", rather
+ * than "the camera is crooked".
+ *
+ * Measured: chair [1.38, 1.71, 1.89] (long axis Z — already on its side, as asked for);
+ * tray [1.91, 0.48, 1.36] (flat, thin on Y).
+ */
+function Adrift() {
+  const chair = useProp('/models/ship_chair.glb', SHIP_TUNE.steel);
+  const tray = useProp('/models/ship_service.glb', SHIP_TUNE.brass);
+  const group = useRef<THREE.Group>(null);
+  const chairS = (0.9 * M) / 1.89;
+  const trayS = (0.5 * M) / 1.91;
+
+  // One slow swell, everything on it a beat apart.
+  useFrame((state) => {
+    const g = group.current;
+    if (!g) return;
+    const t = state.clock.getElapsedTime();
+    g.children.forEach((c, i) => {
+      c.position.y = (c.userData.baseY as number) + Math.sin(t * 0.5 + i * 2.1) * 0.013;
+      c.rotation.z = (c.userData.baseRz as number) + Math.sin(t * 0.38 + i * 1.4) * 0.022;
+    });
+  });
+
+  // Waterlogged velvet: it rides low, only the back breaking the surface.
+  const chairY = WATER_Y - 0.3;
+  const trayY = WATER_Y + 0.03;
+  return (
+    <group ref={group}>
+      <primitive
+        object={chair}
+        position={[-4.5, chairY, 1.1]}
+        rotation={[0.18, -0.9, 0.22]}
+        scale={chairS}
+        userData={{ baseY: chairY, baseRz: 0.22 }}
+      />
+      <primitive
+        object={tray}
+        position={[2.5, trayY, 1.7]}
+        rotation={[0, 0.4, 0.05]}
+        scale={trayS}
+        userData={{ baseY: trayY, baseRz: 0.05 }}
+      />
+    </group>
+  );
+}
+
 function DrownedRoom() {
   const wallH = WALL_H;
   const wallY = wallH / 2 + FLOOR_Y;
@@ -1464,11 +1514,16 @@ function DrownedCeiling() {
  * A bulb that is still trying. Two or three of these are the only warm light left, and
  * they stutter — the cold/warm contrast is the mood, not the blue on its own.
  */
-function DyingLamp({ position, seed, withLight }: {
-  position: [number, number, number]; seed: number; withLight: boolean;
+function DyingLamp({ position, rotationY, seed, withLight }: {
+  position: [number, number, number]; rotationY: number; seed: number; withLight: boolean;
 }) {
   const light = useRef<THREE.PointLight>(null);
-  const bulb = useRef<THREE.MeshStandardMaterial>(null);
+  const glow = useRef<THREE.MeshStandardMaterial>(null);
+  // The GLB is a cage on a base plate, authored standing on its base (mass sits at min-Y).
+  // Tipping it +90° about X lays that plate back against the wall; the Y turn then aims it
+  // into the room.
+  const cage = useProp('/models/ship_caglamp.glb', SHIP_TUNE.steel);
+
   useFrame((state) => {
     const t = state.clock.getElapsedTime() + seed;
     // Mains failing, not a candle: mostly on, with sharp irregular dropouts.
@@ -1476,28 +1531,22 @@ function DyingLamp({ position, seed, withLight }: {
     const on = n > -0.55 ? 1 : 0.08 + Math.abs(n) * 0.1;
     const v = on * (0.82 + Math.sin(t * 2.3) * 0.18);
     if (light.current) light.current.intensity = v * 3.4;
-    if (bulb.current) bulb.current.emissiveIntensity = v * 3.2;
+    if (glow.current) glow.current.emissiveIntensity = v * 3.4;
   });
+
   return (
     <group position={position}>
+      <primitive object={cage} rotation={[Math.PI / 2, rotationY, 0]} scale={0.34} />
+      {/* The filament, kept as our own sphere: the model's bulb is unlit geometry, and this
+          is what actually has to stutter. */}
       <mesh>
-        <sphereGeometry args={[0.075, 10, 8]} />
-        <meshStandardMaterial ref={bulb} color="#3a2a14" emissive="#ffb352" emissiveIntensity={2.4} toneMapped={false} />
-      </mesh>
-      {/* Cage */}
-      <mesh>
-        <torusGeometry args={[0.11, 0.008, 5, 14]} />
-        <meshStandardMaterial color="#3a3a38" metalness={0.7} roughness={0.6} />
-      </mesh>
-      <mesh rotation={[0, Math.PI / 2, 0]}>
-        <torusGeometry args={[0.11, 0.008, 5, 14]} />
-        <meshStandardMaterial color="#3a3a38" metalness={0.7} roughness={0.6} />
+        <sphereGeometry args={[0.05, 10, 8]} />
+        <meshStandardMaterial ref={glow} color="#3a2a14" emissive="#ffb352" emissiveIntensity={2.6} toneMapped={false} />
       </mesh>
       {withLight && <pointLight ref={light} color="#ffa845" intensity={3.4} distance={7} decay={2} />}
     </group>
   );
 }
-
 function Room({ sconceLights, decoSconce }: { sconceLights: boolean; decoSconce: boolean }) {
   const wallH = WALL_H;
   const wallY = wallH / 2 + FLOOR_Y;
@@ -2973,6 +3022,9 @@ useGLTF.preload('/models/ship_porthole.glb');
 useGLTF.preload('/models/ship_hatch.glb');
 useGLTF.preload('/models/ship_chandelier_sunk.glb');
 useGLTF.preload('/models/ship_balustrade.glb');
+useGLTF.preload('/models/ship_caglamp.glb');
+useGLTF.preload('/models/ship_chair.glb');
+useGLTF.preload('/models/ship_service.glb');
 
 const SEAT_MODEL: Record<string, string> = {
   'seat.throne': '/models/chair.glb',
@@ -3102,9 +3154,9 @@ function Scene({
           <>
             {/* The last three bulbs. Only the near pair carry real lights — a flickering
                 point light is cheap, but six of them is a shader recompile away. */}
-            <DyingLamp position={[-6.7, 3.3, -1.5]} seed={0} withLight />
-            <DyingLamp position={[6.7, 3.3, 0.5]} seed={2.7} withLight />
-            <DyingLamp position={[-6.7, 3.3, -5.5]} seed={5.1} withLight={false} />
+            <DyingLamp position={[-6.75, 3.3, -1.5]} rotationY={Math.PI / 2} seed={0} withLight />
+            <DyingLamp position={[6.75, 3.3, 0.5]} rotationY={-Math.PI / 2} seed={2.7} withLight />
+            <DyingLamp position={[-6.75, 3.3, -5.5]} rotationY={Math.PI / 2} seed={5.1} withLight={false} />
           </>
         )}
         {/* Cosmetics. Each slot picks its cast; the shabby defaults are procedural so a new
@@ -3130,6 +3182,7 @@ function Scene({
         <>
           <FloodWater reflective={preset.reflectiveFloor} />
           <SunkenChandelier />
+          <Adrift />
           <Flotsam />
           {quality !== 'low' && <Caustics />}
           {/* Bounce off the surface — a cold uplight nothing else in the room provides. */}

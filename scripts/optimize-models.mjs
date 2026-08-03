@@ -59,6 +59,16 @@ const PLAN = {
   ship_chandelier_sunk: { ratio: null, tex: 1024, note: '泡在水里，中近景' },
   ship_balustrade: { ratio: null, tex: 512, note: '背景 5 段，远景' },
 
+  // 沉船宴会厅 —— 全是智能拓扑，面数本来就低（3.8k–7.5k）。舷窗和笼灯在中景，
+  // 舱门和栏板占画面高度但离得远，1K 到头；水面上的杂物只有巴掌大，512 够。
+  ship_porthole: { ratio: null, tex: 512, note: '侧墙中景，直径 40cm' },
+  ship_hatch: { ratio: null, tex: 1024, note: '玩家身后，占画面高度' },
+  ship_chandelier_sunk: { ratio: null, tex: 1024, note: '泡在水里的主角物件' },
+  ship_balustrade: { ratio: null, tex: 512, note: '背景楼梯栏板' },
+  ship_chair: { ratio: null, tex: 512, note: '翻倒的餐椅' },
+  ship_caglamp: { ratio: null, tex: 512, note: '笼灯，35cm' },
+  ship_service: { ratio: null, tex: 512, note: '漂在水面的餐盘' },
+
   table_obsidian: { ratio: null, tex: 1024, note: '画面主体' },
   table_jade: { ratio: null, tex: 1024, note: '画面主体，玉的纹理要留' },
   chandelier_skull: { ratio: null, tex: 1024, note: '头顶中景，骷髅细节要认得出' },
