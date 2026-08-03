@@ -53,6 +53,12 @@ const PLAN = {
   prop_coins: { ratio: null, tex: 512, note: '铜钱串，桌上 18cm' },
   prop_incense: { ratio: null, tex: 512, note: '铜香炉，桌上 12cm' },
 
+  // 沉船宴会厅 —— 智能拓扑，面数本来就低。舷窗和栏板要复制多份，贴图压狠一点。
+  ship_porthole: { ratio: null, tex: 512, note: '侧墙 6 个实例，中景' },
+  ship_hatch: { ratio: null, tex: 1024, note: '玩家身后，近景，细节要留' },
+  ship_chandelier_sunk: { ratio: null, tex: 1024, note: '泡在水里，中近景' },
+  ship_balustrade: { ratio: null, tex: 512, note: '背景 5 段，远景' },
+
   table_obsidian: { ratio: null, tex: 1024, note: '画面主体' },
   table_jade: { ratio: null, tex: 1024, note: '画面主体，玉的纹理要留' },
   chandelier_skull: { ratio: null, tex: 1024, note: '头顶中景，骷髅细节要认得出' },

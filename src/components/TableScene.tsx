@@ -27,6 +27,9 @@ const PERSONALITY_COLOR: Record<Personality, string> = {
 
 const FLOOR_Y = -0.55;
 const WALL_H = 7;
+// Units per metre. Every prop and fitting scale is written as (real size × M) ÷ the
+// model's own measured span, so the numbers stay readable as real-world dimensions.
+const M = 1.85;
 const CEILING_Y = FLOOR_Y + WALL_H;
 
 // How low the chandelier is allowed to hang. Bracketed by eye, not derived — at 2.175
@@ -1261,11 +1264,91 @@ function Rivets() {
   );
 }
 
+// Fittings. Every scale is (target metres × M) ÷ the model's own measured span, so the
+// numbers below are readable as "how big is this thing really" rather than magic factors.
+const SHIP_TUNE = {
+  brass: (m: THREE.MeshStandardMaterial) => { m.roughness = 0.52; m.metalness = 0.78; },
+  steel: (m: THREE.MeshStandardMaterial) => { m.roughness = 0.68; m.metalness = 0.55; },
+  crystal: (m: THREE.MeshStandardMaterial) => { m.roughness = 0.3; m.metalness = 0.5; },
+};
+
+/** 45cm porthole. Measured span 1.90 across, 0.67 deep. */
+function Porthole({ side, z }: { side: -1 | 1; z: number }) {
+  const model = useProp('/models/ship_porthole.glb', SHIP_TUNE.brass);
+  const s = (0.45 * M) / 1.9;
+  return (
+    <primitive
+      object={model}
+      // Proud of the wall by roughly its own depth, so the frame reads as set into plate.
+      position={[side * (7.14 - (0.67 * s) / 2), 2.6, z]}
+      rotation={[0, side * -Math.PI / 2, 0]}
+      scale={s}
+    />
+  );
+}
+
+/** 1.9m watertight door. Measured 1.91 tall, minY -0.953. */
+function BulkheadHatch() {
+  const model = useProp('/models/ship_hatch.glb', SHIP_TUNE.steel);
+  const s = (1.9 * M) / 1.91;
+  return (
+    <primitive
+      object={model}
+      // Sill on the deck: lift by however far the model's own floor sits below its origin.
+      position={[0, FLOOR_Y + 0.953 * s, 7.36]}
+      rotation={[0, Math.PI, 0]}
+      scale={s}
+    />
+  );
+}
+
+/** ~1m balustrade panel, repeated across the back of the saloon. */
+const RAIL_SCALE = (1.0 * M) / 1.91;
+
+function StairPanel({ x }: { x: number }) {
+  // One useProp per panel. useProp clones and memoises internally, so this gives each
+  // panel its own object — calling it once and cloning by hand in the parent would rebuild
+  // every clone on every render, since that clone isn't memoised.
+  const model = useProp('/models/ship_balustrade.glb', SHIP_TUNE.brass);
+  return <primitive object={model} position={[x, FLOOR_Y + 0.953 * RAIL_SCALE, -7.1]} scale={RAIL_SCALE} />;
+}
+
+function GrandStairRail() {
+  const w = 1.69 * RAIL_SCALE;
+  return <>{[-2, -1, 0, 1, 2].map((i) => <StairPanel key={i} x={i * w} />)}</>;
+}
+
+/**
+ * The saloon's chandelier, down in the water. Deliberately NOT inside the tilted group —
+ * it fell, so it lies with the water, not with the ship.
+ * Measured [0.89, 1.31, 1.91] with its long axis on Z, i.e. already on its side.
+ */
+function SunkenChandelier() {
+  const model = useProp('/models/ship_chandelier_sunk.glb', SHIP_TUNE.crystal);
+  const s = (1.2 * M) / 1.91;
+  return (
+    <primitive
+      object={model}
+      // Low side of the wreck is −X: the room rotates +Z, which lifts +X and drops −X.
+      // Centred on the waterline so it sits half in, half out.
+      position={[-3.6, WATER_Y, -3.2]}
+      rotation={[0.12, 0.9, -0.22]}
+      scale={s}
+    />
+  );
+}
+
 function DrownedRoom() {
   const wallH = WALL_H;
   const wallY = wallH / 2 + FLOOR_Y;
   return (
     <group>
+      {/* Portholes down both sides — the single strongest "this is a hull" cue. */}
+      {([-1, 1] as const).map((side) =>
+        [-5.5, -1.5, 2.5].map((z) => <Porthole key={side + 'p' + z} side={side} z={z} />),
+      )}
+      <BulkheadHatch />
+      <GrandStairRail />
       {/* Plate walls */}
       <mesh position={[-7.2, wallY, -2]} rotation={[0, Math.PI / 2, 0]}>
         <planeGeometry args={[18, wallH]} />
@@ -2496,7 +2579,6 @@ useGLTF.preload('/models/column.glb');
 //
 // Y is never typed in — it's derived from each model's own bbox floor, so the prop rests
 // exactly on the felt instead of hovering over it or sinking into it.
-const M = 1.85; // units per metre
 
 type PropDef = {
   url: string;
@@ -2886,6 +2968,11 @@ function Chair({ url }: { url: string }) {
 }
 useGLTF.preload('/models/chair.glb');
 useGLTF.preload('/models/throne_bone.glb');
+// The wreck's fittings. 1.2MB for all four, and the room is unusable without them.
+useGLTF.preload('/models/ship_porthole.glb');
+useGLTF.preload('/models/ship_hatch.glb');
+useGLTF.preload('/models/ship_chandelier_sunk.glb');
+useGLTF.preload('/models/ship_balustrade.glb');
 
 const SEAT_MODEL: Record<string, string> = {
   'seat.throne': '/models/chair.glb',
@@ -3042,6 +3129,7 @@ function Scene({
       {drowned && (
         <>
           <FloodWater reflective={preset.reflectiveFloor} />
+          <SunkenChandelier />
           <Flotsam />
           {quality !== 'low' && <Caustics />}
           {/* Bounce off the surface — a cold uplight nothing else in the room provides. */}
