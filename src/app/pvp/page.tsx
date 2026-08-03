@@ -19,6 +19,7 @@ import Matchmaking, { SeatPhase } from '@/components/Matchmaking';
 import DecoButton from '@/components/DecoButton';
 import Flourish from '@/components/Flourish';
 import BackButton from '@/components/BackButton';
+import { MATCH_EVENT } from '@/components/AccountBar';
 
 type Stage = 'lobby' | 'waiting' | 'playing';
 
@@ -235,6 +236,14 @@ export default function PvpPage() {
   // BGM per stage.
   useEffect(() => {
     audio.playMusic(stage === 'playing' ? 'table' : 'lobby');
+  }, [stage]);
+
+  // Hide the global account bar while a match is live. Only GameBoard was ever sending
+  // this, so a PvP match ran with the wallet — and a sign-out button — parked over the
+  // verdict beam the whole time.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(MATCH_EVENT, { detail: stage === 'playing' }));
+    return () => { window.dispatchEvent(new CustomEvent(MATCH_EVENT, { detail: false })); };
   }, [stage]);
 
   // Keep the ref in step with the waiting stage so the 'connect' handler always sees the
