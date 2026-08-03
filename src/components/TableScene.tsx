@@ -1203,6 +1203,218 @@ function Flotsam() {
   );
 }
 
+// ————————————————————————— The wreck's shell —————————————————————————
+//
+// The first pass at this room just flooded the salon: same red pilasters, same arched city
+// windows, same warm gold light. Water in a drawing room is a leak, not a shipwreck. This
+// replaces the architecture outright.
+//
+// The tells that make a room read as a ship rather than a building: riveted plate instead
+// of plaster, transverse frames instead of coffered beams, and a ceiling low enough to
+// feel like a deck above you.
+
+const STEEL_MAT = { color: '#1b2226', roughness: 0.72, metalness: 0.42, emissive: '#0a1013', emissiveIntensity: 0.45 };
+const PANEL_MAT = { color: '#2a1c14', roughness: 0.86, metalness: 0.06, emissive: '#0e0806', emissiveIntensity: 0.4 };
+const BRASS_MAT = { color: '#5a4a22', roughness: 0.45, metalness: 0.8, emissive: '#1e1808', emissiveIntensity: 0.45 };
+/** Top of the dado panelling. Below it wood, above it bare plate. */
+const DADO_Y = 1.45;
+
+const RIVET_DUMMY = new THREE.Object3D();
+
+/**
+ * Rivet rows along the plate seams. Several hundred of them, so one InstancedMesh — as
+ * individual meshes this would be the heaviest thing in the room by draw calls alone.
+ */
+function Rivets() {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const spots = useMemo(() => {
+    const out: [number, number, number][] = [];
+    // Horizontal seams on both side walls, above the dado.
+    for (const side of [-1, 1]) {
+      for (const y of [DADO_Y + 0.12, 3.1, 4.9]) {
+        for (let z = -8; z <= 7; z += 0.42) out.push([side * 7.12, y, z]);
+      }
+    }
+    // And across the back wall.
+    for (const y of [DADO_Y + 0.12, 3.1, 4.9]) {
+      for (let x = -7; x <= 7; x += 0.42) out.push([x, y, -8.12]);
+    }
+    return out;
+  }, []);
+
+  useEffect(() => {
+    const m = ref.current;
+    if (!m) return;
+    spots.forEach((p, i) => {
+      RIVET_DUMMY.position.set(p[0], p[1], p[2]);
+      RIVET_DUMMY.updateMatrix();
+      m.setMatrixAt(i, RIVET_DUMMY.matrix);
+    });
+    m.instanceMatrix.needsUpdate = true;
+  }, [spots]);
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, spots.length]} castShadow={false}>
+      <sphereGeometry args={[0.035, 6, 4]} />
+      <meshStandardMaterial color="#2e373c" roughness={0.55} metalness={0.7} />
+    </instancedMesh>
+  );
+}
+
+function DrownedRoom() {
+  const wallH = WALL_H;
+  const wallY = wallH / 2 + FLOOR_Y;
+  return (
+    <group>
+      {/* Plate walls */}
+      <mesh position={[-7.2, wallY, -2]} rotation={[0, Math.PI / 2, 0]}>
+        <planeGeometry args={[18, wallH]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+      <mesh position={[7.2, wallY, -2]} rotation={[0, -Math.PI / 2, 0]}>
+        <planeGeometry args={[18, wallH]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+      <mesh position={[0, wallY, -8.2]}>
+        <planeGeometry args={[16, wallH]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+      <mesh position={[0, wallY, 7.5]} rotation={[0, Math.PI, 0]}>
+        <planeGeometry args={[16, wallH]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+
+      {/* Dado panelling — lacquered wood to waist height, the liner's one touch of luxury,
+          and now the part that has been sitting in salt water. */}
+      {([[-7.14, Math.PI / 2, 18], [7.14, -Math.PI / 2, 18]] as const).map(([x, ry, len]) => (
+        <group key={'d' + x}>
+          <mesh position={[x, (DADO_Y + FLOOR_Y) / 2, -2]} rotation={[0, ry, 0]}>
+            <planeGeometry args={[len, DADO_Y - FLOOR_Y]} />
+            <meshStandardMaterial {...PANEL_MAT} />
+          </mesh>
+          {/* Chair rail */}
+          <mesh position={[x - Math.sign(x) * 0.05, DADO_Y, -2]}>
+            <boxGeometry args={[0.1, 0.09, len]} />
+            <meshStandardMaterial {...BRASS_MAT} />
+          </mesh>
+        </group>
+      ))}
+      <mesh position={[0, (DADO_Y + FLOOR_Y) / 2, -8.14]}>
+        <planeGeometry args={[16, DADO_Y - FLOOR_Y]} />
+        <meshStandardMaterial {...PANEL_MAT} />
+      </mesh>
+      <mesh position={[0, DADO_Y, -8.09]}>
+        <boxGeometry args={[16, 0.09, 0.1]} />
+        <meshStandardMaterial {...BRASS_MAT} />
+      </mesh>
+
+      {/* Vertical plate seams — the frames the hull is built on, showing through. */}
+      {([-1, 1] as const).map((side) =>
+        [-7.5, -5, -2.5, 0, 2.5, 5].map((z) => (
+          <mesh key={side + 'v' + z} position={[side * 7.16, wallY + 0.6, z]}>
+            <boxGeometry args={[0.06, wallH - 2.2, 0.13]} />
+            <meshStandardMaterial color="#232b30" roughness={0.7} metalness={0.5} />
+          </mesh>
+        )),
+      )}
+
+      <Rivets />
+    </group>
+  );
+}
+
+/**
+ * Deck above, seen from below: close transverse frames, and at the centre the saloon's
+ * glass dome — cracked, with the sea standing on top of it.
+ */
+function DrownedCeiling() {
+  const y = WALL_H + FLOOR_Y;
+  return (
+    <group>
+      {/* The deckhead itself */}
+      <mesh position={[0, y, -0.5]} rotation={[Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[16, 17]} />
+        <meshStandardMaterial color="#141b1e" roughness={0.9} metalness={0.2} emissive="#080d10" emissiveIntensity={0.45} />
+      </mesh>
+
+      {/* Transverse frames. Ships are ribbed across the beam, not coffered — closely
+          spaced and shallow, which is what makes a deckhead feel low. */}
+      {Array.from({ length: 13 }, (_, i) => -8 + i * 1.35).map((z) => (
+        <mesh key={'rib' + z} position={[0, y - 0.14, z]}>
+          <boxGeometry args={[15.6, 0.2, 0.16]} />
+          <meshStandardMaterial color="#1e262a" roughness={0.75} metalness={0.4} emissive="#0a0f12" emissiveIntensity={0.4} />
+        </mesh>
+      ))}
+
+      {/* The dome. Dark green water standing on the glass, so the one opening overhead is
+          also the one place you can see how deep you are. */}
+      <mesh position={[0, y + 0.02, -0.9]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[2.5, 40]} />
+        <meshStandardMaterial color="#123038" roughness={0.25} metalness={0.3} emissive="#16414a" emissiveIntensity={0.9} transparent opacity={0.92} />
+      </mesh>
+      {/* Brass ring and radial glazing bars */}
+      <mesh position={[0, y - 0.03, -0.9]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[2.5, 0.08, 8, 56]} />
+        <meshStandardMaterial {...BRASS_MAT} />
+      </mesh>
+      {Array.from({ length: 10 }).map((_, i) => {
+        const a = (i / 10) * Math.PI;
+        return (
+          <mesh key={'bar' + i} position={[0, y - 0.04, -0.9]} rotation={[0, a, 0]}>
+            <boxGeometry args={[5, 0.05, 0.05]} />
+            <meshStandardMaterial {...BRASS_MAT} />
+          </mesh>
+        );
+      })}
+      {/* The crack: three jagged bars where the glass gave. */}
+      {[[0.5, 0.4], [-0.9, 1.1], [1.9, -0.5]].map(([rot, off], i) => (
+        <mesh key={'crack' + i} position={[off * 0.6, y - 0.06, -0.9 + off * 0.4]} rotation={[0, rot, 0]}>
+          <boxGeometry args={[3.4, 0.06, 0.035]} />
+          <meshStandardMaterial color="#0a1a1e" roughness={0.9} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/**
+ * A bulb that is still trying. Two or three of these are the only warm light left, and
+ * they stutter — the cold/warm contrast is the mood, not the blue on its own.
+ */
+function DyingLamp({ position, seed, withLight }: {
+  position: [number, number, number]; seed: number; withLight: boolean;
+}) {
+  const light = useRef<THREE.PointLight>(null);
+  const bulb = useRef<THREE.MeshStandardMaterial>(null);
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime() + seed;
+    // Mains failing, not a candle: mostly on, with sharp irregular dropouts.
+    const n = Math.sin(t * 11.3) * Math.sin(t * 4.1) * Math.sin(t * 23.7);
+    const on = n > -0.55 ? 1 : 0.08 + Math.abs(n) * 0.1;
+    const v = on * (0.82 + Math.sin(t * 2.3) * 0.18);
+    if (light.current) light.current.intensity = v * 3.4;
+    if (bulb.current) bulb.current.emissiveIntensity = v * 3.2;
+  });
+  return (
+    <group position={position}>
+      <mesh>
+        <sphereGeometry args={[0.075, 10, 8]} />
+        <meshStandardMaterial ref={bulb} color="#3a2a14" emissive="#ffb352" emissiveIntensity={2.4} toneMapped={false} />
+      </mesh>
+      {/* Cage */}
+      <mesh>
+        <torusGeometry args={[0.11, 0.008, 5, 14]} />
+        <meshStandardMaterial color="#3a3a38" metalness={0.7} roughness={0.6} />
+      </mesh>
+      <mesh rotation={[0, Math.PI / 2, 0]}>
+        <torusGeometry args={[0.11, 0.008, 5, 14]} />
+        <meshStandardMaterial color="#3a3a38" metalness={0.7} roughness={0.6} />
+      </mesh>
+      {withLight && <pointLight ref={light} color="#ffa845" intensity={3.4} distance={7} decay={2} />}
+    </group>
+  );
+}
+
 function Room({ sconceLights, decoSconce }: { sconceLights: boolean; decoSconce: boolean }) {
   const wallH = WALL_H;
   const wallY = wallH / 2 + FLOOR_Y;
@@ -2756,10 +2968,13 @@ function Scene({
       {/* Midnight-blue base with warm gold accents — palette from the Dark Deco refs */}
       <color attach="background" args={['#070a16']} />
       <fog attach="fog" args={['#070a16', 5.5, 16]} />
-      <ambientLight ref={ambient} intensity={0.62} color="#4a3a22" />
+      {/* The wreck swaps the room's warmth for water-filtered green. The dying bulbs above
+          supply what little warm light is left, and that contrast is the whole mood — a
+          uniformly blue room would just read as a colour filter. */}
+      <ambientLight ref={ambient} intensity={drowned ? 0.5 : 0.62} color={drowned ? '#1d4a52' : '#4a3a22'} />
       <CeremonyLights active={revealCeremony} spotRef={spot} ambientRef={ambient} />
       <FinaleLights spotRef={spot} ambientRef={ambient} hemiRef={hemi} />
-      <hemisphereLight ref={hemi} args={['#3a4570', '#140a10', 0.55]} />
+      <hemisphereLight ref={hemi} args={drowned ? ['#2c6a74', '#050f12', 0.7] : ['#3a4570', '#140a10', 0.55]} />
       <spotLight
         ref={spot}
         position={SPOT_POS}
@@ -2794,8 +3009,17 @@ function Scene({
           player interacts with keeps its original coordinates, so none of the placement
           maths downstream has to know this room exists. */}
       <group rotation={drowned ? [0, 0, WRECK_TILT] : [0, 0, 0]}>
-        <Room sconceLights={quality !== 'low'} decoSconce={look.room === 'room.deco'} />
-        <Ceiling />
+        {drowned ? <DrownedRoom /> : <Room sconceLights={quality !== 'low'} decoSconce={look.room === 'room.deco'} />}
+        {drowned ? <DrownedCeiling /> : <Ceiling />}
+        {drowned && (
+          <>
+            {/* The last three bulbs. Only the near pair carry real lights — a flickering
+                point light is cheap, but six of them is a shader recompile away. */}
+            <DyingLamp position={[-6.7, 3.3, -1.5]} seed={0} withLight />
+            <DyingLamp position={[6.7, 3.3, 0.5]} seed={2.7} withLight />
+            <DyingLamp position={[-6.7, 3.3, -5.5]} seed={5.1} withLight={false} />
+          </>
+        )}
         {/* Cosmetics. Each slot picks its cast; the shabby defaults are procedural so a new
             account still gets a coherent room without any of the bought art. */}
         {look.room === 'room.deco' && (
@@ -2825,10 +3049,29 @@ function Scene({
         </>
       )}
 
-      {/* Light cones: one under the chandelier, one broad wash over the table */}
-      {/* Hangs off the chandelier, so its top tracks CHANDELIER_Y down to the table */}
-      <VolumetricBeam position={[0, (CHANDELIER_Y + TABLE_SURFACE_Y) / 2, -0.9]} radiusTop={0.9} radiusBottom={2.1} height={CHANDELIER_Y - TABLE_SURFACE_Y} color="#f0d8a0" opacity={0.05} />
-      <VolumetricBeam position={[0, 1.9, -0.3]} radiusTop={1.1} radiusBottom={2.7} height={3.6} color="#e8d0a0" opacity={0.03} />
+      {drowned ? (
+        <>
+          {/* Daylight falling through the broken dome and the water above it. This is the
+              room's key light, and it comes from the sea rather than from any fixture —
+              which is why the fitting overhead can be dead and the table still lit. */}
+          <VolumetricBeam
+            position={[0, (WALL_H + FLOOR_Y + TABLE_SURFACE_Y) / 2, -0.9]}
+            radiusTop={2.4}
+            radiusBottom={3.4}
+            height={WALL_H + FLOOR_Y - TABLE_SURFACE_Y}
+            color="#7fd8dc"
+            opacity={0.055}
+          />
+          <VolumetricBeam position={[0, 2.2, -0.9]} radiusTop={1.6} radiusBottom={3.0} height={4.2} color="#5fc0c8" opacity={0.035} />
+        </>
+      ) : (
+        <>
+          {/* Light cones: one under the chandelier, one broad wash over the table */}
+          {/* Hangs off the chandelier, so its top tracks CHANDELIER_Y down to the table */}
+          <VolumetricBeam position={[0, (CHANDELIER_Y + TABLE_SURFACE_Y) / 2, -0.9]} radiusTop={0.9} radiusBottom={2.1} height={CHANDELIER_Y - TABLE_SURFACE_Y} color="#f0d8a0" opacity={0.05} />
+          <VolumetricBeam position={[0, 1.9, -0.3]} radiusTop={1.1} radiusBottom={2.7} height={3.6} color="#e8d0a0" opacity={0.03} />
+        </>
+      )}
       {LIGHT_MODEL[look.light]
         ? <Chandelier url={LIGHT_MODEL[look.light].url} accent={LIGHT_MODEL[look.light].accent} />
         : <BareBulb />}
