@@ -355,6 +355,9 @@ function FinaleLights({ spotRef, ambientRef, hemiRef }: {
   return null;
 }
 
+/** Beat between cards arriving in the hand. */
+const FAN_DEAL_STAGGER = 0.07;
+
 // One card in the held fan. Coordinates are camera-local (z- is forward).
 function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: {
   card: CardType; index: number; count: number; selected: boolean; canSelect: boolean;
@@ -369,14 +372,28 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
   // Hidden until its deal beat. Set here rather than as a JSX `visible={false}`, which the
   // reconciler could stamp back over the animation on an incidental re-render.
   useEffect(() => { if (group.current) group.current.visible = false; }, []);
+  const born = useRef<number | null>(null);
 
   const off = index - (count - 1) / 2;
   // A finger needs more room than a cursor: spread the fan wider on touch so neighbouring
   // cards don't share a tap target.
   const spread = touch ? 0.15 : 0.105;
+  const dealAt = index * FAN_DEAL_STAGGER;
 
   useFrame((state, delta) => {
     if (!group.current) return;
+
+    // The deal. Without this the hide above was permanent — the effect turned the card off
+    // on mount and nothing ever turned it back on, so the whole hand was invisible for the
+    // entire match. Cards arrive one beat apart, left to right.
+    const now = state.clock.getElapsedTime();
+    if (born.current === null) born.current = now;
+    if (now - born.current < dealAt) {
+      group.current.visible = false;
+      return;
+    }
+    group.current.visible = true;
+
     const k = 1 - Math.exp(-delta * 10);
     // Tutorial hint: the guided card breathes upward until the player takes it.
     const hintLift = hinted && !selected ? 0.04 + Math.sin(state.clock.getElapsedTime() * 3) * 0.018 : 0;
