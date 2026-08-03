@@ -1005,6 +1005,204 @@ function ArchWindow({ position, rotationY }: { position: [number, number, number
   );
 }
 
+// ————————————————————————— 沉船宴会厅 —————————————————————————
+//
+// A liner's dining saloon, gone down and settled on its side. Almost none of this is
+// modelled: the room slot is already ~85% procedural (walls, drapes, banners, railing,
+// carpet and ceiling are all code — only the column, the sconce and the ceiling rose are
+// GLBs), and what actually sells a flooded room is light and motion, which no amount of
+// model generation can give you.
+//
+// The whole effect rests on one contrast: the ARCHITECTURE is tilted and the WATER IS NOT.
+// A level waterline cutting across a canted room is what the eye reads as "this ship is
+// going down", and it costs one rotation on a group.
+
+/** How far the wreck leans. Small on purpose — enough to unsettle, not enough to notice. */
+const WRECK_TILT = 0.042;
+/** Waterline, in world Y. Floor is -0.55, felt is 0.84: shin-deep, well clear of the cards. */
+const WATER_Y = 0.12;
+
+/**
+ * Caustics, as a canvas texture. Summed sine bands raised to a high power leave thin
+ * bright filaments — the same trick a shader would use, baked once at 256² and then just
+ * scrolled, so it costs one texture and no per-frame maths.
+ */
+function makeCausticTexture(size = 256): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d')!;
+  const img = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // Wrapping frequencies (whole multiples of 2π across the texture) so it tiles.
+      const u = (x / size) * Math.PI * 2;
+      const v = (y / size) * Math.PI * 2;
+      const s =
+        Math.sin(u * 3 + Math.cos(v * 2) * 1.4) +
+        Math.sin(v * 4 - Math.cos(u * 3) * 1.1) +
+        Math.sin((u + v) * 2.5);
+      const b = Math.pow(Math.max(0, s / 3), 6);
+      const i = (y * size + x) * 4;
+      img.data[i] = 255;
+      img.data[i + 1] = 252;
+      img.data[i + 2] = 226;
+      img.data[i + 3] = Math.min(255, b * 900);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+let causticCache: THREE.CanvasTexture | null = null;
+const causticTexture = () => (causticCache ??= makeCausticTexture());
+
+/**
+ * Light dancing on the ceiling, refracted up off the water. Two additive sheets at
+ * different scales drifting in different directions — one alone reads as a moving pattern,
+ * two crossing read as water.
+ */
+function Caustics() {
+  const a = useRef<THREE.Mesh>(null);
+  const b = useRef<THREE.Mesh>(null);
+  const tex = useMemo(() => causticTexture(), []);
+  const matA = useMemo(() => new THREE.MeshBasicMaterial({
+    map: tex.clone(), transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }), [tex]);
+  const matB = useMemo(() => new THREE.MeshBasicMaterial({
+    map: tex.clone(), transparent: true, opacity: 0.32,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }), [tex]);
+  useEffect(() => {
+    (matA.map as THREE.Texture).repeat.set(3, 3);
+    (matB.map as THREE.Texture).repeat.set(1.7, 1.7);
+    return () => { matA.map?.dispose(); matB.map?.dispose(); matA.dispose(); matB.dispose(); };
+  }, [matA, matB]);
+
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime();
+    const ma = matA.map, mb = matB.map;
+    if (ma) ma.offset.set(t * 0.021, t * 0.013);
+    if (mb) mb.offset.set(-t * 0.014, t * 0.019);
+    // A slow swell in brightness, as if the surface above were rolling.
+    matA.opacity = 0.38 + Math.sin(t * 0.5) * 0.12;
+    matB.opacity = 0.26 + Math.sin(t * 0.37 + 2) * 0.09;
+  });
+
+  const y = WALL_H + FLOOR_Y - 0.06;
+  return (
+    <>
+      <mesh ref={a} position={[0, y, -0.5]} rotation={[Math.PI / 2, 0, 0]} material={matA} renderOrder={1}>
+        <planeGeometry args={[16, 17]} />
+      </mesh>
+      <mesh ref={b} position={[0, y - 0.02, -0.5]} rotation={[Math.PI / 2, 0, 0.7]} material={matB} renderOrder={1}>
+        <planeGeometry args={[16, 17]} />
+      </mesh>
+    </>
+  );
+}
+
+/**
+ * The flood. Level, while everything around it is not.
+ *
+ * On the top tier this is a real reflector, because the room upside-down in black water is
+ * the whole picture. It renders the scene a second time, so the lower tiers get a plain
+ * dark surface with the same drifting caustic sheen on top — which still reads, because
+ * the caustics carry the motion.
+ */
+function FloodWater({ reflective }: { reflective: boolean }) {
+  const sheen = useRef<THREE.Mesh>(null);
+  const tex = useMemo(() => causticTexture().clone(), []);
+  const sheenMat = useMemo(() => new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, opacity: 0.14,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }), [tex]);
+  useEffect(() => {
+    tex.repeat.set(5, 5);
+    return () => { tex.dispose(); sheenMat.dispose(); };
+  }, [tex, sheenMat]);
+
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime();
+    tex.offset.set(t * 0.008, -t * 0.011);
+    // The surface itself breathes a few millimetres. Enough that the waterline against the
+    // walls is never perfectly still.
+    if (sheen.current) sheen.current.position.y = WATER_Y + 0.004 + Math.sin(t * 0.6) * 0.006;
+  });
+
+  return (
+    <>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, WATER_Y, -1]}>
+        <planeGeometry args={[30, 30]} />
+        {reflective ? (
+          <MeshReflectorMaterial
+            blur={[300, 90]}
+            resolution={512}
+            mixBlur={1.1}
+            mixStrength={7}
+            depthScale={1.2}
+            minDepthThreshold={0.3}
+            maxDepthThreshold={1.5}
+            color="#0b1416"
+            roughness={0.35}
+            metalness={0.5}
+            mirror={0.62}
+          />
+        ) : (
+          <meshStandardMaterial color="#0b1416" roughness={0.28} metalness={0.55} transparent opacity={0.94} />
+        )}
+      </mesh>
+      <mesh ref={sheen} rotation={[-Math.PI / 2, 0, 0]} position={[0, WATER_Y + 0.004, -1]} material={sheenMat} renderOrder={1}>
+        <planeGeometry args={[30, 30]} />
+      </mesh>
+    </>
+  );
+}
+
+/** What's left floating. A handful of slabs turning slowly — the room's own wreckage. */
+function Flotsam() {
+  const group = useRef<THREE.Group>(null);
+  const bits = useMemo(() => (
+    Array.from({ length: 9 }, (_, i) => {
+      const a = (i / 9) * Math.PI * 2 + i * 0.7;
+      const r = 3.2 + ((i * 37) % 100) / 100 * 2.6;
+      return {
+        x: Math.cos(a) * r,
+        z: Math.sin(a) * r - 1,
+        w: 0.18 + ((i * 53) % 100) / 100 * 0.5,
+        d: 0.12 + ((i * 91) % 100) / 100 * 0.3,
+        spin: (i % 2 ? 1 : -1) * (0.03 + ((i * 17) % 50) / 1000),
+        phase: i * 1.1,
+      };
+    })
+  ), []);
+
+  useFrame((state) => {
+    const g = group.current;
+    if (!g) return;
+    const t = state.clock.getElapsedTime();
+    g.children.forEach((c, i) => {
+      const b = bits[i];
+      c.rotation.y = t * b.spin + b.phase;
+      c.position.y = WATER_Y + 0.012 + Math.sin(t * 0.5 + b.phase) * 0.012;
+      c.rotation.z = Math.sin(t * 0.4 + b.phase) * 0.05;
+    });
+  });
+
+  return (
+    <group ref={group}>
+      {bits.map((b, i) => (
+        <mesh key={i} position={[b.x, WATER_Y + 0.012, b.z]} castShadow={false}>
+          <boxGeometry args={[b.w, 0.018, b.d]} />
+          <meshStandardMaterial color="#241a12" roughness={0.95} metalness={0} emissive="#0a0806" emissiveIntensity={0.4} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function Room({ sconceLights, decoSconce }: { sconceLights: boolean; decoSconce: boolean }) {
   const wallH = WALL_H;
   const wallY = wallH / 2 + FLOOR_Y;
@@ -2524,6 +2722,7 @@ function Scene({
   look, onMenuPick, menuTutorialDone,
 }: SceneProps) {
   const preset = QUALITY_PRESETS[quality];
+  const drowned = look.room === 'room.drowned';
   const spot = useRef<THREE.SpotLight>(null);
   const ambient = useRef<THREE.AmbientLight>(null);
   const hemi = useRef<THREE.HemisphereLight>(null);
@@ -2589,29 +2788,50 @@ function Scene({
       </Environment>
 
       <DustMotes count={preset.dust} />
-      <Room sconceLights={quality !== 'low'} decoSconce={look.room === 'room.deco'} />
-      <Ceiling />
+
+      {/* The shell. Tilted as one piece for the wreck — the table, the cards and the
+          waterline all stay level, and that mismatch is the entire effect. Everything the
+          player interacts with keeps its original coordinates, so none of the placement
+          maths downstream has to know this room exists. */}
+      <group rotation={drowned ? [0, 0, WRECK_TILT] : [0, 0, 0]}>
+        <Room sconceLights={quality !== 'low'} decoSconce={look.room === 'room.deco'} />
+        <Ceiling />
+        {/* Cosmetics. Each slot picks its cast; the shabby defaults are procedural so a new
+            account still gets a coherent room without any of the bought art. */}
+        {look.room === 'room.deco' && (
+          <>
+            <CeilingRose />
+            <DistantColumns />
+            <Drapes />
+            <RoyalBanner x={-1.95} />
+            <RoyalBanner x={1.95} />
+          </>
+        )}
+        {drowned && <DistantColumns />}
+        <Railing />
+        {/* Two reflectors would mean rendering the whole scene three times a frame, and
+            the floor is under the water here anyway — nobody can see it. */}
+        <Floor reflective={preset.reflectiveFloor && !drowned} />
+        <Carpet />
+      </group>
+
+      {drowned && (
+        <>
+          <FloodWater reflective={preset.reflectiveFloor} />
+          <Flotsam />
+          {quality !== 'low' && <Caustics />}
+          {/* Bounce off the surface — a cold uplight nothing else in the room provides. */}
+          <pointLight position={[0, WATER_Y + 0.3, -1]} color="#2e6f78" intensity={2.2} distance={9} decay={2} />
+        </>
+      )}
+
       {/* Light cones: one under the chandelier, one broad wash over the table */}
       {/* Hangs off the chandelier, so its top tracks CHANDELIER_Y down to the table */}
       <VolumetricBeam position={[0, (CHANDELIER_Y + TABLE_SURFACE_Y) / 2, -0.9]} radiusTop={0.9} radiusBottom={2.1} height={CHANDELIER_Y - TABLE_SURFACE_Y} color="#f0d8a0" opacity={0.05} />
       <VolumetricBeam position={[0, 1.9, -0.3]} radiusTop={1.1} radiusBottom={2.7} height={3.6} color="#e8d0a0" opacity={0.03} />
-      {/* Cosmetics. Each slot picks its cast; the shabby defaults are procedural so a new
-          account still gets a coherent room without any of the bought art. */}
-      {look.room === 'room.deco' && (
-        <>
-          <CeilingRose />
-          <DistantColumns />
-          <Drapes />
-          <RoyalBanner x={-1.95} />
-          <RoyalBanner x={1.95} />
-        </>
-      )}
-      <Railing />
       {LIGHT_MODEL[look.light]
         ? <Chandelier url={LIGHT_MODEL[look.light].url} accent={LIGHT_MODEL[look.light].accent} />
         : <BareBulb />}
-      <Floor reflective={preset.reflectiveFloor} />
-      <Carpet />
 
       {/* The pile drivers. Each set lost advances a needle one notch toward an ear;
           both transforms come out of aimDrill, so neither can drift off target. */}

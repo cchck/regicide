@@ -77,6 +77,7 @@ export const ITEMS: ShopItem[] = [
   // ——— 房间 ———
   { id: 'room.concrete', slot: 'room', name: '水泥地下室', blurb: '裸墙，霉斑，一扇焊死的窗。没人会来找你。', rarity: 'common', price: 0, ready: true },
   { id: 'room.deco', slot: 'room', name: '午夜沙龙', blurb: '深蓝墙面、猩红壁柱、垂到地板的天鹅绒幕布，还有一圈立柱。', rarity: 'rare', price: 750, ready: true },
+  { id: 'room.drowned', slot: 'room', name: '沉船宴会厅', blurb: '一艘邮轮的餐厅，沉了，歪着。水淹到小腿，天花板上全是晃动的光纹。牌桌是这屋里唯一水平的东西。', rarity: 'legend', price: 1600, ready: true },
 
   // ——— 庄家 ———
   { id: 'dealer.hood', slot: 'dealer', name: '兜帽庄家', blurb: '看不见脸，只看得见那两点红光。', rarity: 'common', price: 0, ready: true },
