@@ -453,7 +453,7 @@ function MenuFanCard({ id, index, count, onPick }: {
   const off = index - (count - 1) / 2;
   // Wider than the in-match fan: these carry readable names, and on touch each one needs
   // its own comfortable target.
-  const spread = touch ? 0.185 : 0.152;
+  const spread = touch ? 0.21 : 0.178;
   // The duel card is dealt last, so it lands on top of the others.
   const dealAt = (hero ? count - 1 : index < count / 2 ? index : index - 1) * MENU_DEAL_STAGGER;
   // Where this card comes to rest. The hit target below is pinned here and never moves,
