@@ -859,7 +859,7 @@ export default function GameBoard() {
       <>
         {menuScene}
         <HubScreen
-          tutorialDone={tutorialDone}
+
           sitting={sitting}
           onEnter={goto}
         />
@@ -1290,8 +1290,7 @@ type HubEntryKey = MenuCardId;
  * The hub's DOM layer. It is now only the masthead, a hover label and an accessibility
  * nav — the five destinations themselves are dealt as 3D cards by TableScene's MenuFan.
  */
-function HubScreen({ tutorialDone, sitting, onEnter }: {
-  tutorialDone: boolean;
+function HubScreen({ sitting, onEnter }: {
   sitting: boolean;
   onEnter: (key: HubEntryKey) => void;
 }) {
@@ -1324,19 +1323,6 @@ function HubScreen({ tutorialDone, sitting, onEnter }: {
       </div>
       {/* Floor haze — the cards need something to sit against without a hard band */}
       <div className="absolute bottom-0 inset-x-0 h-56 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
-
-      {/* First visit: say the cards are pickable. A fan is not as self-evidently clickable
-          as a row of buttons was, and this is the one place that trade-off has to be paid. */}
-      {!tutorialDone && (
-        <div className="absolute bottom-[7%] inset-x-0 text-center">
-          <p
-            className="text-[11px] tracking-[5px] text-amber font-display inline-block px-3 py-1"
-            style={{ animation: 'pulse-glow 2.4s ease-in-out infinite' }}
-          >
-            翻开一张牌
-          </p>
-        </div>
-      )}
 
       {/* The fan lives in WebGL, so it is invisible to a keyboard and to a screen reader.
           These are the same five destinations as real focusable buttons. Without them the

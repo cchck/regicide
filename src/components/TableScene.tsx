@@ -427,6 +427,15 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
 
 const MENU_DEAL_STAGGER = 0.085;
 
+// Camera-local rest pose for the fan. Y was -0.34, which put the bottom third of every
+// card below the frame — the glyph read but the name under it was cut off.
+const FAN_Y = -0.2;
+const FAN_Z = -0.86;
+// Separation between neighbours along the view axis. This was 0.006, barely more than a
+// card's own thickness (0.022 × 0.26 scale ≈ 0.0057), so overlapping faces sat inside each
+// other's depth slice and the sort order between them was a coin flip every frame.
+const FAN_GAP = 0.022;
+
 function MenuFanCard({ id, index, count, onPick }: {
   id: MenuCardId;
   index: number;
@@ -447,6 +456,22 @@ function MenuFanCard({ id, index, count, onPick }: {
   const spread = touch ? 0.185 : 0.152;
   // The duel card is dealt last, so it lands on top of the others.
   const dealAt = (hero ? count - 1 : index < count / 2 ? index : index - 1) * MENU_DEAL_STAGGER;
+  // Where this card comes to rest. The hit target below is pinned here and never moves,
+  // which is the whole point — see the comment on it.
+  const restX = off * spread;
+  const restY = FAN_Y - Math.abs(off) * 0.016;
+  const restZ = FAN_Z + index * FAN_GAP;
+
+  // Touch has no hover, so a face-down fan would be unreadable and a tap-to-flip-then-tap
+  // -again scheme makes every destination cost two taps. Instead the deal plays out face
+  // down (the card back still gets its moment) and the whole hand turns over on landing.
+  const [autoFaceUp, setAutoFaceUp] = useState(false);
+  useEffect(() => {
+    if (!touch) return;
+    const t = setTimeout(() => setAutoFaceUp(true), (dealAt + 0.5) * 1000);
+    return () => clearTimeout(t);
+  }, [touch, dealAt]);
+  const faceUp = touch ? autoFaceUp : hovered;
 
   useFrame((state, delta) => {
     const g = group.current;
@@ -457,9 +482,7 @@ function MenuFanCard({ id, index, count, onPick }: {
 
     const k = 1 - Math.exp(-delta * 9);
     const lift = (hovered ? 0.055 : 0) + (hero ? 0.032 : 0);
-    const tx = off * spread;
-    const ty = -0.34 + lift - Math.abs(off) * 0.016;
-    const tz = -0.8 + (hero ? 0.03 : index * 0.006) + (hovered ? 0.05 : 0);
+    const tz = restZ + (hero ? 0.02 : 0) + (hovered ? 0.06 : 0);
 
     if (age < 0) {
       // Still in the dealer's hand: parked off the top of the frame, unseen.
@@ -468,17 +491,17 @@ function MenuFanCard({ id, index, count, onPick }: {
       return;
     }
     g.visible = true;
-    g.position.x += (tx - g.position.x) * k;
-    g.position.y += (ty - g.position.y) * k;
+    g.position.x += (restX - g.position.x) * k;
+    g.position.y += (restY + lift - g.position.y) * k;
     g.position.z += (tz - g.position.z) * k;
 
     const rz = -off * 0.13;
     g.rotation.z += (rz - g.rotation.z) * k;
     // Face down until you look at it. π → 0.
-    const ry = hovered ? 0 : Math.PI;
+    const ry = faceUp ? 0 : Math.PI;
     g.rotation.y += (ry - g.rotation.y) * (1 - Math.exp(-delta * 11));
     // Tips up toward the camera as it turns over.
-    g.rotation.x += ((-0.18 - (hovered ? 0.1 : 0)) - g.rotation.x) * k;
+    g.rotation.x += ((-0.18 - (faceUp ? 0.1 : 0)) - g.rotation.x) * k;
   });
 
   // Hover state stays LOCAL to the card. Lifting it into GameBoard so a DOM label could
@@ -488,32 +511,44 @@ function MenuFanCard({ id, index, count, onPick }: {
   const leave = () => { setHovered(false); document.body.style.cursor = 'auto'; };
 
   return (
-    <group
-      ref={group}
-      position={[0, 0.55, -1.5]}
-      rotation={[-0.18, Math.PI, 0]}
-      scale={0.26}
-      onClick={(e) => {
-        e.stopPropagation();
-        // On touch there is no hover, so the first tap turns the card over and the second
-        // takes it — you always see what you're choosing before you choose it.
-        if (touch && !hovered) { enter(); return; }
-        onPick(id);
-      }}
-      onPointerOver={touch ? undefined : (e) => { e.stopPropagation(); enter(); }}
-      onPointerOut={touch ? undefined : leave}
-    >
-      <MenuCardMesh faceId={id} />
-      {/* The duel card keeps a low ember on it even face-down, so the eye lands there. */}
-      {hero && (
-        <pointLight position={[0, 0, 0.5]} color="#ff2a2a" intensity={hovered ? 1.6 : 0.7} distance={1.4} decay={2} />
-      )}
-      {touch && (
-        <mesh position={[0, 0, 0.03]} visible={false}>
-          <planeGeometry args={[1.5, 2.05]} />
-        </mesh>
-      )}
-    </group>
+    <>
+      {/*
+        The hit target, and it is deliberately NOT part of the animated card.
+
+        Putting the handlers on the card itself made it flicker: hovering rotates the card
+        (π → 0) and lifts it, which drags its geometry out from under the cursor, which
+        fires onPointerOut, which rotates it back under the cursor, which fires
+        onPointerOver — an oscillation that reads as strobing. This plane sits at the
+        card's rest pose and never moves, so the hover state can't chase its own tail.
+        Slightly oversized, which also gives a fingertip somewhere forgiving to land.
+      */}
+      <mesh
+        position={[restX, restY, restZ + 0.09]}
+        rotation={[-0.18, 0, -off * 0.13]}
+        scale={0.26}
+        visible={false}
+        onClick={(e) => { e.stopPropagation(); onPick(id); }}
+        onPointerOver={touch ? undefined : (e) => { e.stopPropagation(); enter(); }}
+        onPointerOut={touch ? undefined : leave}
+      >
+        <planeGeometry args={[touch ? 1.6 : 1.15, touch ? 2.1 : 1.6]} />
+      </mesh>
+
+      <group
+        ref={group}
+        position={[0, 0.55, -1.5]}
+        rotation={[-0.18, Math.PI, 0]}
+        scale={0.26}
+        // No pointer handlers here — see above.
+        raycast={() => null}
+      >
+        <MenuCardMesh faceId={id} />
+        {/* The duel card keeps a low ember on it even face-down, so the eye lands there. */}
+        {hero && (
+          <pointLight position={[0, 0, 0.5]} color="#ff2a2a" intensity={hovered ? 1.6 : 0.7} distance={1.4} decay={2} />
+        )}
+      </group>
+    </>
   );
 }
 
