@@ -167,9 +167,9 @@ export default function LoginPage() {
           {/* Fields */}
           <div className="flex flex-col gap-7">
             {mode === 'signup' && (
-              <Field label="昵 称" name="displayName" value={displayName} onChange={setDisplayName} required />
+              <Field label="昵 称" name="displayName" value={displayName} onChange={setDisplayName} required autoComplete="nickname" />
             )}
-            <Field label="邮 箱" name="email" type="email" value={email} onChange={setEmail} required />
+            <Field label="邮 箱" name="email" type="email" value={email} onChange={setEmail} required autoComplete="email" />
             <Field
               label="密 码"
               name="password"
@@ -179,7 +179,16 @@ export default function LoginPage() {
               required
               minLength={6}
               hint={mode === 'signup' ? '至少 6 位' : undefined}
+              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
             />
+            {/* Said plainly, because it is true and the consequence is permanent. There is
+                no reset flow — deliberately, for now — so a forgotten password is a lost
+                account, and the player deserves to know that before they pick one. */}
+            {mode === 'signup' && (
+              <p className="-mt-3 text-[11px] tracking-[2px] text-amber/80 font-display leading-relaxed">
+                密码无法找回，请务必记牢或让浏览器保存
+              </p>
+            )}
           </div>
 
           {/* Error banner — styled like an inline plaque, not a raw browser alert */}
@@ -231,10 +240,19 @@ function Field({
   required,
   minLength,
   hint,
+  autoComplete,
 }: {
   label: string;
   name: string;
   type?: string;
+  /**
+   * Passed in rather than derived from `type`, because the right token depends on which
+   * form this is. Deriving it hardcoded every password box to `current-password`, and on
+   * the signup form that actively suppresses the browser's offer to save or generate one —
+   * which matters more here than in most apps: with no reset flow, the password the
+   * browser stores is the only copy that survives the player forgetting it.
+   */
+  autoComplete: string;
   value: string;
   onChange: (v: string) => void;
   required?: boolean;
@@ -272,7 +290,7 @@ function Field({
           onChange={(e) => onChange(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          autoComplete={type === 'password' ? 'current-password' : type === 'email' ? 'email' : 'off'}
+          autoComplete={autoComplete}
           className="w-full bg-black/55 border text-text-bright px-5 py-4 text-base tracking-[2px] font-display outline-none transition-all duration-200"
           style={{
             borderColor: focused ? '#aa1111' : '#2a2a3a',
