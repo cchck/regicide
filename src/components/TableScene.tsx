@@ -4,7 +4,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { Environment, Lightformer, MeshReflectorMaterial, useGLTF, useTexture, useProgress } from '@react-three/drei';
 import { EffectComposer, Bloom, Vignette, ToneMapping, N8AO, Noise } from '@react-three/postprocessing';
 import { ToneMappingMode, BlendFunction } from 'postprocessing';
-import { ReactNode, Suspense, createContext, useContext, useRef, useMemo, useState, useEffect } from 'react';
+import { ReactNode, Suspense, createContext, useContext, useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { createPortal } from '@react-three/fiber';
 import { SkeletonUtils } from 'three-stdlib';
 import * as THREE from 'three';
@@ -13,6 +13,7 @@ import { useIsTouch } from '@/lib/device';
 import { normalizeLoadout, type Loadout } from '@/lib/shop';
 import { audio } from '@/lib/audio';
 import PlayedCard, { CardMesh, MenuCardMesh, CardBackContext } from './Card3D';
+import { SceneBoundary, SceneFallback, hasWebGL } from './SceneFallback';
 import { MENU_ORDER, MenuCardId } from '@/lib/menuCards';
 import type { CardBackId } from '@/lib/cardArt';
 import ChipEconomy from './Chips3D';
@@ -3855,11 +3856,32 @@ export default function TableScene({
   menuTutorialDone = true,
 }: TableSceneProps) {
   const preset = QUALITY_PRESETS[quality];
+
+  // Probed on the client after mount, never during render: the server has no DOM, and
+  // guessing on the server then correcting on the client would be a hydration mismatch.
+  const [webgl, setWebgl] = useState<boolean | null>(null);
+  useEffect(() => { setWebgl(hasWebGL()); }, []);
+
+  // The GPU can take the drawing buffer away at any time — a driver reset, or a phone
+  // backgrounded long enough for the OS to reclaim it. Default behaviour is a permanently
+  // black canvas with nothing said; preventDefault at least keeps restoration possible,
+  // and either way the player gets told instead of staring at a void.
+  const [contextLost, setContextLost] = useState(false);
+  const onCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
+    const el = gl.domElement;
+    el.addEventListener('webglcontextlost', (e) => { e.preventDefault(); setContextLost(true); });
+    el.addEventListener('webglcontextrestored', () => setContextLost(false));
+  }, []);
+
+  if (webgl === false) return <div className="absolute inset-0"><SceneFallback reason="unsupported" /></div>;
+
   return (
     // Pointer events stay ON — the 3D hand fan is clickable. Overlaid UI sits above (z-10+)
     // and still receives its own clicks first.
     <div className="absolute inset-0">
+      <SceneBoundary>
       <Canvas
+        onCreated={onCreated}
         // Remount when quality changes — gl options (AA, tone mapping) are creation-time only.
         key={quality}
         shadows={preset.shadows}
@@ -3903,6 +3925,8 @@ export default function TableScene({
         />
         </Suspense>
       </Canvas>
+      </SceneBoundary>
+      {contextLost && <SceneFallback reason="lost" />}
       <LoadingVeil />
     </div>
   );
