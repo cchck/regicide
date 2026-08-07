@@ -17,11 +17,23 @@ export async function POST() {
   const result = await prisma.$transaction(async (tx) => {
     const user = await tx.user.findUnique({
       where: { id: session.user.id },
-      select: { chips: true },
+      select: { chips: true, activeStake: true, pvpStake: true },
     });
     if (!user) return { error: '账号不存在', status: 404 } as const;
-    if (user.chips >= RELIEF_THRESHOLD) {
-      return { error: '还没到山穷水尽的地步', status: 400 } as const;
+
+    // Everything the player owns, INCLUDING what is currently on a table. Testing `chips`
+    // alone was an unlimited money printer: buying into a match moves the whole balance
+    // into activeStake, leaving chips at 0, which read as destitute. Buy in → claim 200 →
+    // buy in with that → claim again. No cards ever had to be played.
+    //
+    // Money staked on a table is still yours. You are not broke, it is just not in your
+    // hand — so no relief until the table gives it back and it is genuinely gone.
+    const holdings = user.chips + (user.activeStake ?? 0) + (user.pvpStake ?? 0);
+    if (holdings >= RELIEF_THRESHOLD) {
+      return {
+        error: user.chips < RELIEF_THRESHOLD ? '你还有筹码押在桌上' : '还没到山穷水尽的地步',
+        status: 400,
+      } as const;
     }
     const updated = await tx.user.update({
       where: { id: session.user.id },

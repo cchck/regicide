@@ -18,9 +18,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         password: {},
       },
       authorize: async (credentials) => {
-        const email = credentials?.email as string | undefined;
+        const raw = credentials?.email as string | undefined;
         const password = credentials?.password as string | undefined;
-        if (!email || !password) return null;
+        if (!raw || !password) return null;
+
+        // Normalised the SAME way signup stores it. Without this, anyone who typed a
+        // capital letter in their address could never log in again: signup writes
+        // `trim().toLowerCase()`, so `Kevin@X.com` is stored as `kevin@x.com`, and an
+        // exact-match lookup on what they typed finds nothing — reported to the player as
+        // "wrong email or password", with no way out.
+        const email = raw.trim().toLowerCase();
 
         const user = await prisma.user.findUnique({ where: { email } });
         if (!user) return null;

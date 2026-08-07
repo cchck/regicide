@@ -30,12 +30,16 @@ export default function LoginPage() {
     setError(null);
     setBusy(true);
     const isSignup = mode === 'signup';
+    // Normalised here too, purely so the field and the record agree on screen. The server
+    // does the same on both signup and sign-in and is the authority — this is not what
+    // makes case-insensitive login work.
+    const emailNorm = email.trim().toLowerCase();
     try {
       if (isSignup) {
         const res = await fetch('/api/signup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password, displayName }),
+          body: JSON.stringify({ email: emailNorm, password, displayName }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -44,7 +48,7 @@ export default function LoginPage() {
           return;
         }
       }
-      const result = await signIn('credentials', { email, password, redirect: false });
+      const result = await signIn('credentials', { email: emailNorm, password, redirect: false });
       if (result?.error) {
         // Distinguish "just signed up but auto-login failed" from a plain signin failure —
         // the first case is misleading otherwise (account IS created, but user sees "password wrong").
