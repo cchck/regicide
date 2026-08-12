@@ -44,6 +44,9 @@ model User {
   cardPlayStats  CardPlayStat[]
   cardPlayEvents CardPlayEvent[]
   ownedItems     OwnedItem[]
+
+  // The chips board sorts on this and counts ranks against it on every request.
+  @@index([chips])
 }
 
 enum Role {
