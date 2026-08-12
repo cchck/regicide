@@ -49,7 +49,7 @@ export async function POST(req: Request) {
 
     const updated = await tx.user.update({
       where: { id: session.user.id },
-      data: { chips: { increment: settled }, activeStake: null, seals: { increment: seals } },
+      data: { chips: { increment: settled }, activeStake: null, stakeAt: null, seals: { increment: seals } },
       select: { chips: true, seals: true },
     });
     return { balance: updated.chips, seals: updated.seals, sealsEarned: seals } as const;

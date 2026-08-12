@@ -337,6 +337,9 @@ function recordRound(room: Room, prev: GameState, next: GameState) {
             won: e.won,
             folded,
             foldedSelf: e.foldedSelf,
+            // Written from the server's own state — the client never had a say, so this
+            // half of the log is the half a competitive board can be built on.
+            source: 'PVP',
           },
         });
         if (!folded) {

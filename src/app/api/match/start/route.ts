@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     // forfeited by the mid-match-exit rule, and its claim dies with the overwrite.
     const updated = await tx.user.update({
       where: { id: session.user.id },
-      data: { chips: { decrement: stack }, activeStake: stack },
+      data: { chips: { decrement: stack }, activeStake: stack, stakeAt: new Date() },
       select: { chips: true },
     });
     return { stack, balance: updated.chips } as const;
