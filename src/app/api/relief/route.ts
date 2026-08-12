@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { prisma } from '@/lib/db';
+import { LIMITS, take, tooMany } from '@/lib/rate-limit';
 
 const RELIEF_AMOUNT = 200;
 // Below the cheapest buy-in (血引 100) you're locked out of every table — that's when
@@ -13,6 +14,8 @@ export async function POST() {
   if (!session?.user?.id) {
     return NextResponse.json({ error: '未登录' }, { status: 401 });
   }
+  const gate = take(`relief:${session.user.id}`, LIMITS.account);
+  if (!gate.ok) return tooMany(gate.retryAfter);
 
   const result = await prisma.$transaction(async (tx) => {
     const user = await tx.user.findUnique({

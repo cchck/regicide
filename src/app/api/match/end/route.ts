@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { prisma } from '@/lib/db';
+import { LIMITS, take, tooMany } from '@/lib/rate-limit';
 import { SEALS_PER_WIN, SEALS_PER_REGICIDE, MAX_REGICIDES_PER_MATCH } from '@/lib/shop';
 
 // Settle a finished match: whatever the player walked away from the table with goes
@@ -17,6 +18,8 @@ export async function POST(req: Request) {
   if (!session?.user?.id) {
     return NextResponse.json({ error: '未登录' }, { status: 401 });
   }
+  const gate = take(`match-end:${session.user.id}`, LIMITS.account);
+  if (!gate.ok) return tooMany(gate.retryAfter);
 
   const body = await req.json().catch(() => ({}));
   const finalChips = Number(body?.finalChips);

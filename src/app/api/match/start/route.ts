@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { prisma } from '@/lib/db';
+import { LIMITS, take, tooMany } from '@/lib/rate-limit';
 
 // Buy into a match: deduct the stake from the persistent bankroll up front.
 // If the balance can't cover the full buy-in, the player sits down with whatever
@@ -10,6 +11,8 @@ export async function POST(req: Request) {
   if (!session?.user?.id) {
     return NextResponse.json({ error: '未登录' }, { status: 401 });
   }
+  const gate = take(`match-start:${session.user.id}`, LIMITS.account);
+  if (!gate.ok) return tooMany(gate.retryAfter);
 
   const body = await req.json().catch(() => ({}));
   const buyIn = Number(body?.buyIn);

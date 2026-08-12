@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
+import { LIMITS, clientIp, take, tooMany } from '@/lib/rate-limit';
 
 // Pragmatic, not RFC-complete: something before an @, something after it with a dot, and
 // no whitespace anywhere. The goal is to stop "abc" becoming an account — an address that
@@ -18,6 +19,11 @@ const PASSWORD_MIN = 6;
 const PASSWORD_MAX_BYTES = 72;
 
 export async function POST(req: Request) {
+  // Per IP, before any work: account creation is the cheapest thing to automate and the
+  // most expensive to clean up afterwards.
+  const gate = take(`signup:${clientIp(req)}`, LIMITS.signup);
+  if (!gate.ok) return tooMany(gate.retryAfter, '注册太频繁了，请稍后再试');
+
   const body = await req.json().catch(() => null);
   const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
   const password = typeof body?.password === 'string' ? body.password : '';

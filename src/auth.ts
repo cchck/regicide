@@ -2,6 +2,7 @@ import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
+import { LIMITS, take } from '@/lib/rate-limit';
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   // Behind a tunnel / Nginx reverse proxy the request host isn't localhost;
@@ -28,6 +29,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         // exact-match lookup on what they typed finds nothing — reported to the player as
         // "wrong email or password", with no way out.
         const email = raw.trim().toLowerCase();
+
+        // Keyed on the address rather than the IP: NextAuth's authorize doesn't hand us a
+        // request, and the address is what an attacker is actually grinding through. It
+        // does mean someone could lock a known victim out of signing in for 15 minutes —
+        // accepted, because the alternative is leaving password guessing unmetered.
+        if (!take(`login:${email}`, LIMITS.login).ok) return null;
 
         const user = await prisma.user.findUnique({ where: { email } });
         if (!user) return null;

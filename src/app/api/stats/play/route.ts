@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { prisma } from '@/lib/db';
+import { LIMITS, take, tooMany } from '@/lib/rate-limit';
 
 const ROLE_MAP = { emperor: 'EMPEROR', slave: 'SLAVE' } as const;
 const CARD_MAP = { emperor: 'EMPEROR', citizen: 'CITIZEN', slave: 'SLAVE' } as const;
@@ -13,6 +14,8 @@ export async function POST(req: Request) {
   if (!session?.user?.id) {
     return NextResponse.json({ error: '未登录' }, { status: 401 });
   }
+  const gate = take(`stats:${session.user.id}`, LIMITS.statsPlay);
+  if (!gate.ok) return tooMany(gate.retryAfter);
 
   const body = await req.json().catch(() => null);
   const role = ROLE_MAP[body?.role as keyof typeof ROLE_MAP];

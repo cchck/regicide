@@ -49,6 +49,16 @@ const STATE_VERSION = 1;
 
 // Lock Socket.IO CORS to the web origin in production; open in dev when unset.
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN;
+
+// Refuse to boot rather than quietly serving every origin on the internet. The CORS option
+// below falls back to `true`, which reflects whatever Origin asked — fine on a laptop,
+// wrong in production, and exactly the kind of default that is never noticed until it
+// matters. Ticket auth still stands in the way of anything useful, but defence in depth is
+// only depth if each layer is actually on.
+if (process.env.NODE_ENV === 'production' && !ALLOWED_ORIGIN) {
+  console.error('[ws] 生产环境必须设置 ALLOWED_ORIGIN（网站的来源，例如 https://your.app）');
+  process.exit(1);
+}
 // Emotes are pure psychological warfare — allowed, but not as a spam weapon.
 const EMOTE_COOLDOWN_MS = 2500;
 const EMOTES = new Set(['taunt', 'clap', 'doze', 'angry', 'think']);
