@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import TableScene from '@/components/TableScene';
+import { SealIcon } from '@/components/CurrencyIcon';
 import BackButton from '@/components/BackButton';
 import DecoButton from '@/components/DecoButton';
 import { useQuality } from '@/lib/device';
@@ -127,6 +128,12 @@ export default function ShopPage() {
           pot={0}
           quality={quality}
           look={preview}
+          // Nothing is on the felt in this room, which is fine for a table or a chandelier
+          // but makes the card-back slot unbuyable-blind: you'd be paying for art you
+          // cannot see. Deal one face-down card while that slot is open — the same view
+          // the back actually gets in a match, across the table from the opponent.
+          opponentCard={slot === 'cardBack' ? 'citizen' : null}
+          opponentFaceDown={slot === 'cardBack'}
         />
       </div>
 
@@ -135,7 +142,7 @@ export default function ShopPage() {
       {/* Wallet — the only one on this page (the global bar hides itself here) */}
       <div className="absolute top-5 right-5 z-30 flex items-center gap-2 px-4 py-2 border border-amber/50 bg-black/75 backdrop-blur-sm"
         style={{ clipPath: 'polygon(8px 0,calc(100% - 8px) 0,100% 8px,100% calc(100% - 8px),calc(100% - 8px) 100%,8px 100%,0 calc(100% - 8px),0 8px)' }}>
-        <span className="text-amber text-base leading-none">◈</span>
+        <SealIcon size={18} className="text-amber shrink-0" />
         <span className="font-display font-black text-xl text-amber-bright tabular-nums leading-none">{seals}</span>
         <span className="text-[10px] tracking-[2px] text-text-muted font-display">金印</span>
       </div>
@@ -255,7 +262,7 @@ export default function ShopPage() {
                         <span className="text-[11px] tracking-[1px] text-text-muted font-display">已拥有</span>
                       ) : (
                         <span className="flex items-center gap-1 text-amber-bright font-display font-bold text-[14px]">
-                          <span className="text-[11px]">◈</span>{item.price}
+                          <SealIcon size={12} className="shrink-0" />{item.price}
                         </span>
                       )}
                     </div>
@@ -276,7 +283,7 @@ export default function ShopPage() {
               )}
               {focus && focus.ready && !focusOwned && (
                 <DecoButton color="amber" size="md" disabled={busy || seals < focus.price} onClick={() => buy(focus)}>
-                  买 下 ◈{focus.price}
+                  <span className="inline-flex items-center gap-1.5">买 下 <SealIcon size={13} className="shrink-0" />{focus.price}</span>
                 </DecoButton>
               )}
               {focus && focus.ready && focusOwned && !focusEquipped && (

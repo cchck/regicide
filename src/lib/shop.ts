@@ -72,10 +72,12 @@ export const ITEMS: ShopItem[] = [
   { id: 'props.tin', slot: 'props', name: '铁皮烟灰缸', blurb: '瘪了一角，积着灰。桌上就这么一件东西。', rarity: 'common', price: 0, ready: true },
   { id: 'props.vice', slot: 'props', name: '绅士的恶习', blurb: '燃着的雪茄、水晶醒酒器、一捆扎好的钞票——一整套派头。', rarity: 'fine', price: 300, ready: true },
   { id: 'props.collateral', slot: 'props', name: '抵 押 物', blurb: '婚戒压在锡碟里，当票扎在铜签上，绒盒里躺着三颗金牙和一只义眼。都是别人留下的。', rarity: 'rare', price: 550, ready: true },
+  { id: 'props.eastern', slot: 'props', name: '东 方 局', blurb: '紫砂壶温着，铜钱串搁在手边，香炉里两支香烧到一半。同样的恶习，另一套器物。', rarity: 'rare', price: 550, ready: true },
 
   // ——— 房间 ———
   { id: 'room.concrete', slot: 'room', name: '水泥地下室', blurb: '裸墙，霉斑，一扇焊死的窗。没人会来找你。', rarity: 'common', price: 0, ready: true },
   { id: 'room.deco', slot: 'room', name: '午夜沙龙', blurb: '深蓝墙面、猩红壁柱、垂到地板的天鹅绒幕布，还有一圈立柱。', rarity: 'rare', price: 750, ready: true },
+  { id: 'room.drowned', slot: 'room', name: '沉船宴会厅', blurb: '一艘邮轮的餐厅，沉了，歪着。水淹到小腿，天花板上全是晃动的光纹。牌桌是这屋里唯一水平的东西。', rarity: 'legend', price: 1600, ready: true },
 
   // ——— 庄家 ———
   { id: 'dealer.hood', slot: 'dealer', name: '兜帽庄家', blurb: '看不见脸，只看得见那两点红光。', rarity: 'common', price: 0, ready: true },
@@ -85,8 +87,13 @@ export const ITEMS: ShopItem[] = [
 
   // ——— 牌背 ———
   { id: 'cardBack.house', slot: 'cardBack', name: '庄家纹章', blurb: '标准牌背。所有人都是从这副牌开始的。', rarity: 'common', price: 0, ready: true },
-  { id: 'cardBack.gilt', slot: 'cardBack', name: '烫金几何', blurb: '装饰艺术的放射纹，边缘压金。', rarity: 'fine', price: 180, ready: false },
-  { id: 'cardBack.blood', slot: 'cardBack', name: '血手印', blurb: '一枚按在牌背上的掌印。你希望那是印上去的。', rarity: 'rare', price: 600, ready: false },
+  { id: 'cardBack.gilt', slot: 'cardBack', name: '烫金几何', blurb: '装饰艺术的放射纹，从中心炸开，边缘压金。灯扫过时整张牌会亮一下。', rarity: 'fine', price: 180, ready: true },
+  // Renamed from `cardBack.blood` (a handprint that never got made — it relied on the
+  // viewer recognising a hand, which stops working at the size a card back is actually
+  // seen). Safe to change the id: it shipped as ready:false, so no OwnedItem row can
+  // reference it. Repriced from 600 — a card back is only ever seen on the opponent's one
+  // face-down card, which didn't justify costing more than a three-piece prop set.
+  { id: 'cardBack.crown', slot: 'cardBack', name: '倒 冠', blurb: '一顶倒过来的帝冠，被一根钉子从上面贯穿。宝石正在往下掉。', rarity: 'rare', price: 350, ready: true },
 
   // ——— 耳钻 ———
   { id: 'drill.iron', slot: 'drill', name: '锈铁钻', blurb: '出厂那台。锈是真的，声音也是真的。', rarity: 'common', price: 0, ready: true },

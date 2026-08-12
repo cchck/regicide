@@ -65,7 +65,15 @@ npm run dev    # http://localhost:3000
 npm run ws     # PvP server on :3801
 ```
 
-`npm run ws` is only needed for real-time PvP; AI matches run entirely in the browser.
+`npm run dev` alone is enough to play. The AI opponent is computed entirely in the
+browser, so with the PvP server down the 对战 lobby detects it (~3.5s), says so, and
+quick-match seats the house immediately instead of standing in a queue that isn't there.
+
+`npm run ws` adds the other half: a matchmaking queue per buy-in tier, private rooms by
+code, and authoritative game state. It holds the hands — an opponent's cards never reach
+your client — plus decision timers and chip settlement. To test a real match you need two
+signed-in accounts (a second browser profile or an incognito window) both hitting
+快速入座 at the same tier.
 
 ### Environment
 

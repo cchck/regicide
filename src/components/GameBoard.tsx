@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useReducer, useCallback, useEffect, useRef, useState } from 'react';
+import { useReducer, useCallback, useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { gameReducer, initialState } from '@/lib/game-engine';
@@ -12,6 +12,8 @@ const RESUME_KEY = 'regicide-resume-v1';
 import { TUTORIAL_SCENES } from '@/lib/tutorial';
 import { audio } from '@/lib/audio';
 import CardArt from './CardArt';
+import type { CardBackId } from '@/lib/cardArt';
+import { MENU_CARDS, MENU_ORDER, MenuCardId } from '@/lib/menuCards';
 import TableScene, { Quality, DealerAction, FinaleKind, FINALE_TIMINGS, ViewMode } from './TableScene';
 import MatchReport, { useFinaleStage } from './MatchReport';
 import { useQuality } from '@/lib/device';
@@ -19,18 +21,12 @@ import { useLoadout } from '@/lib/useLoadout';
 import RotatePrompt from './RotatePrompt';
 import DecoButton from './DecoButton';
 import Flourish from './Flourish';
-import TierCard, { STAKES_TIERS, StakesTier } from './TierCard';
+import { STAKES_TIERS } from './TierCard';
+
+/** Drawn blind when the house sits down. Never surfaced — see the handoff effect below. */
+const AI_TEMPERAMENTS = ['aggressive', 'cautious', 'deceptive'] as const;
 import { CHIPS_EVENT, MATCH_EVENT } from './AccountBar';
 import BackButton from './BackButton';
-
-function MenuSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="relative border border-border-subtle/70 rounded-sm px-6 sm:px-10 pt-8 pb-9 w-full">
-      <span className="absolute -top-3 left-7 px-3 bg-void text-xs tracking-[5px] text-blood uppercase font-display">{title}</span>
-      <div className="flex flex-col gap-9">{children}</div>
-    </div>
-  );
-}
 
 function ScreenFlash({ type }: { type: 'emperor-win' | 'slave-kill' | 'fold' | null }) {
   if (!type) return null;
@@ -344,7 +340,6 @@ export default function GameBoard() {
   }, [matchPointNow]);
 
   // ————— Menu routing + tutorial state machine —————
-  const [menuView, setMenuView] = useState<'hub' | 'setup'>('hub');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // ————— Hub stagecraft: the lobby camera, the host's beckons, the sit-down —————
@@ -363,7 +358,28 @@ export default function GameBoard() {
       setSitting(false);
     }, 2000); // SIT_SECONDS(1.9s) + a settling beat
   }, []);
-  useEffect(() => () => { if (sitTimer.current) clearTimeout(sitTimer.current); }, []);
+  // Clearing the handle is not enough — the ref has to be released too. `sitDown` treats a
+  // non-null ref as "a glide is already running", so a cleanup that cancels the timeout but
+  // leaves the ref set locks out every future glide for the life of the component. In dev
+  // that fires on the very first mount, because StrictMode unmounts and remounts once.
+  useEffect(() => () => {
+    if (sitTimer.current) clearTimeout(sitTimer.current);
+    sitTimer.current = null;
+  }, []);
+
+  // Watchdog. `sitting` hides the entire hub and parks the camera in the seat, so if it
+  // ever sticks the player is left staring at a dead room with no way out — which is
+  // exactly what the StrictMode bug above produced. Nothing legitimate holds it for more
+  // than a glide plus one network round-trip, so anything past 12s is a fault: give the
+  // hub back and leave a trace rather than stranding them.
+  useEffect(() => {
+    if (!sitting) return;
+    const t = setTimeout(() => {
+      console.warn('[hub] sit-down glide never landed — releasing the camera');
+      setSitting(false);
+    }, 12_000);
+    return () => clearTimeout(t);
+  }, [sitting]);
 
   // The host acknowledges you now and then — a slow seated clap, "the seat is open".
   const [hubDealer, setHubDealer] = useState<DealerAction>('idle');
@@ -409,7 +425,6 @@ export default function GameBoard() {
       localStorage.setItem('regicide-tutorial-done', '1');
       setTutorialDone(true);
       setTutorial(null);
-      setMenuView('hub');
       dispatch({ type: 'BACK_TO_MENU' });
       return;
     }
@@ -435,7 +450,7 @@ export default function GameBoard() {
 
   // Persistent bankroll wiring — logged-in players buy in from the database balance
   // and settle back to it when the match ends. Guests play with local chips only.
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
   const loggedIn = !!session?.user;
   // The room the player has earned/bought. Guests keep the free defaults.
   const look = useLoadout(loggedIn);
@@ -527,25 +542,8 @@ export default function GameBoard() {
     }
   }, [loggedIn]);
 
-  // Bankruptcy relief — only offered when the balance can't cover the cheapest table.
-  const [reliefBusy, setReliefBusy] = useState(false);
-  const handleRelief = useCallback(async () => {
-    setReliefBusy(true);
-    setMenuError(null);
-    try {
-      const res = await fetch('/api/relief', { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setMenuError(data.error || `领取失败（HTTP ${res.status}）`);
-        return;
-      }
-      updateBalance(data.balance);
-    } catch {
-      setMenuError('网络错误，领取失败');
-    } finally {
-      setReliefBusy(false);
-    }
-  }, [updateBalance]);
+  // Bankruptcy relief now lives on /pvp, next to the buy-in cards — that's the only screen
+  // where "I can't afford any table" is something the player can act on.
 
   const handleStart = useCallback(async (
     d: 'easy' | 'normal' | 'hard',
@@ -582,6 +580,57 @@ export default function GameBoard() {
       setStarting(false);
     }
   }, [loggedIn]);
+
+  // ————— Handed off from quick match: the house took the seat —————
+  // /pvp sends us here as `/?table=<tierKey>` when the waiting line turned up nobody. The
+  // stake was already chosen there, so there is nothing left to ask: deal.
+  //
+  // The temperament is drawn at random and never shown. Letting a player pick their
+  // opponent's personality quietly dismantles the entire game — the whole point is to read
+  // someone you don't know yet, and a menu that tells you "this one bluffs" hands over the
+  // answer before the first card.
+  // Read once and park it in STATE, not a ref, and consume it in a second effect.
+  //
+  // The obvious single-effect version is broken in dev and it fails in the worst possible
+  // way — silently. StrictMode mounts, unmounts and remounts: the first pass strips the
+  // query string and arms the glide, the unmount cancels the glide, and the remount finds
+  // both the ref set and the URL already clean, so it bails. The camera is left parked in
+  // the seat with the hub faded out and no cards ever dealt.
+  //
+  // Holding it in state fixes that by construction: the remount re-runs the consumer
+  // effect, which re-arms its own timeout, and the handoff is only cleared once the cards
+  // are actually on the table.
+  const [handoff, setHandoff] = useState<{ tier: (typeof STAKES_TIERS)[number]; temperament: (typeof AI_TEMPERAMENTS)[number] } | null>(null);
+  const handoffRead = useRef(false);
+  useEffect(() => {
+    if (handoffRead.current) return;
+    handoffRead.current = true;
+    const key = new URLSearchParams(window.location.search).get('table');
+    if (!key) return;
+    window.history.replaceState(null, '', '/'); // a refresh must not re-deal
+    const tier = STAKES_TIERS.find((s) => s.key === key);
+    if (!tier) return;
+    // Rolled once, here, so a re-render can't reshuffle the opponent mid-glide.
+    setHandoff({ tier, temperament: AI_TEMPERAMENTS[Math.floor(Math.random() * AI_TEMPERAMENTS.length)] });
+  }, []);
+
+  useEffect(() => {
+    if (!handoff) return;
+    // Wait for the session to resolve before dealing. `loggedIn` is false while it loads,
+    // and handleStart's guest path skips the buy-in entirely — firing early would hand out
+    // a free match at whatever tier the URL named.
+    if (sessionStatus === 'loading') return;
+    setSitting(true);
+    audio.sfx('click');
+    const t = setTimeout(async () => {
+      // Stay seated through the await: handleStart is a network round-trip, and dropping
+      // `sitting` first would flash the hub back up between the glide and the deal.
+      await handleStart(handoff.tier.difficulty, handoff.temperament, handoff.tier.buyIn);
+      setHandoff(null);
+      setSitting(false);
+    }, 2000); // SIT_SECONDS(1.9s) + a settling beat
+    return () => clearTimeout(t);
+  }, [handoff, sessionStatus, handleStart]);
 
   // Report each resolved round to the tendency log — the raw material for the
   // future "read your opponent" PvP feature. Once per round, logged-in users only.
@@ -776,8 +825,16 @@ export default function GameBoard() {
 
     // The lobby IS the casino: the real table scene at a doorway camera, the host
     // waiting. Entering a mode that plays at THIS table glides the camera into the
-    // seat first; the setup panel then floats over the seated view.
-    const menuCam: ViewMode = sitting || menuView === 'setup' ? 'transition' : 'lobby';
+    // seat first.
+    const menuCam: ViewMode = sitting ? 'transition' : 'lobby';
+    const goto = (key: HubEntryKey) => {
+      if (sitting) return; // already on the way somewhere
+      if (key === 'tutorial') sitDown(() => startTutorialScene(0));
+      else if (key === 'duel') router.push('/pvp');
+      else if (key === 'dossier') router.push('/dossier');
+      else if (key === 'shop') router.push('/shop');
+      else router.push('/ledger');
+    };
     const menuScene = (
       <div className="fixed inset-0">
         <TableScene
@@ -791,45 +848,41 @@ export default function GameBoard() {
           pot={0}
           quality={quality}
           look={look}
+          // The menu is a hand of cards dealt inside the scene — there is no button dock.
+          // Suppressed during the sit-down glide so a stray click can't fire mid-transition.
+          onMenuPick={sitting ? null : (id) => goto(id as HubEntryKey)}
+          menuTutorialDone={tutorialDone}
         />
       </div>
     );
 
-    if (menuView === 'setup') {
-      return (
-        <>
-          {menuScene}
-          {/* A dark pane over the seated view — you're at the table, choosing stakes */}
-          <div className="fixed inset-0 z-10 bg-void/70 overflow-y-auto fade-in">
-            <SetupScreen
-              onStart={handleStart}
-              onBack={() => setMenuView('hub')}
-              starting={starting}
-              error={menuError}
-              balance={balance}
-              onRelief={handleRelief}
-              reliefBusy={reliefBusy}
-            />
-          </div>
-          {menuChrome}
-        </>
-      );
-    }
     return (
       <>
         {menuScene}
         <HubScreen
-          tutorialDone={tutorialDone}
+
           sitting={sitting}
-          onEnter={(key) => {
-            if (key === 'tutorial') sitDown(() => startTutorialScene(0));
-            else if (key === 'ai') sitDown(() => setMenuView('setup'));
-            else if (key === 'pvp') router.push('/pvp');
-            else if (key === 'dossier') router.push('/dossier');
-            else if (key === 'shop') router.push('/shop');
-            else router.push('/ledger');
-          }}
+          onEnter={goto}
         />
+
+        {/* The buy-in can still fail on the way in (the balance moved, the network died).
+            With the setup screen gone the hub is the only place left to say so — silently
+            landing back here would read as the button simply not working. */}
+        {(starting || menuError) && (
+          <div className="fixed top-28 inset-x-0 z-20 flex justify-center px-6 pointer-events-none">
+            <div
+              className={
+                'px-6 py-3 text-center backdrop-blur-md fade-in ' +
+                (menuError ? 'border-t border-b border-blood/60 bg-blood-surface/80' : 'border border-border/60 bg-black/70')
+              }
+            >
+              <p className={'text-sm tracking-[3px] font-display ' + (menuError ? 'text-blood-glow' : 'text-text-secondary')}>
+                {menuError ?? '入 场 中 …'}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Interrupted-match rescue — the stake is already on the table, offer the seat back */}
         {resumable && (
           <div
@@ -1062,7 +1115,8 @@ export default function GameBoard() {
             <div className="relative z-10 flex justify-center gap-1 pt-2 pb-1 pointer-events-none">
               {state.opponentHand.map((_, i) => (
                 <div key={i} className="w-[36px] h-[50px] opacity-40 drop-shadow-[0_2px_6px_rgba(0,0,0,0.8)]" style={dealKey > 0 && state.roundNumber === 1 ? { opacity: 0, animation: `deal-from-top 0.4s cubic-bezier(0.23,1,0.32,1) ${i * 100}ms forwards` } : undefined}>
-                  <CardArt type="back" />
+                  {/* One deck per table, so the opponent's hand wears the back you own */}
+                  <CardArt type={look.cardBack as CardBackId} />
                 </div>
               ))}
             </div>
@@ -1216,7 +1270,7 @@ export default function GameBoard() {
           durationSec={matchStartRef.current ? (Date.now() - matchStartRef.current) / 1000 : null}
           settled={loggedIn}
           sealsEarned={sealsEarned}
-          onExit={() => { setMenuView('hub'); dispatch({ type: 'BACK_TO_MENU' }); }}
+          onExit={() => { dispatch({ type: 'BACK_TO_MENU' }); }}
         />
       )}
     </div>
@@ -1225,32 +1279,22 @@ export default function GameBoard() {
 
 // ————————————————————————————— Menu screens —————————————————————————————
 
-type HubEntryKey = 'tutorial' | 'ai' | 'pvp' | 'dossier' | 'ledger' | 'shop';
+// One 对战 door, not two. Whether the seat opposite holds a person or the house is a
+// detail of who happens to be awake — it isn't a mode the player should have to choose,
+// and making them choose it advertised "you are playing a bot" before a card was dealt.
+//
+// An alias rather than its own union: the destinations ARE the menu cards now, and two
+// hand-maintained lists would eventually disagree about which doors exist.
+type HubEntryKey = MenuCardId;
 
-const HUB_INK = {
-  teal: { text: '#3fb3b3', rgb: '63,179,179' },
-  blood: { text: '#e83a3a', rgb: '232,58,58' },
-  amber: { text: '#d8ab3c', rgb: '216,171,60' },
-} as const;
-
-// Art Deco corner-cut, the same chamfer the in-match dock and buttons use.
-const HUB_CLIP =
-  'polygon(14px 0,calc(100% - 14px) 0,100% 14px,100% calc(100% - 14px),calc(100% - 14px) 100%,14px 100%,0 calc(100% - 14px),0 14px)';
-
-function HubScreen({ tutorialDone, sitting, onEnter }: {
-  tutorialDone: boolean;
+/**
+ * The hub's DOM layer. It is now only the masthead, a hover label and an accessibility
+ * nav — the five destinations themselves are dealt as 3D cards by TableScene's MenuFan.
+ */
+function HubScreen({ sitting, onEnter }: {
   sitting: boolean;
   onEnter: (key: HubEntryKey) => void;
 }) {
-  const entries: { key: HubEntryKey; glyph: string; title: string; sub: string; ink: keyof typeof HUB_INK; flag?: boolean }[] = [
-    { key: 'tutorial', glyph: '习', title: '新手引导', sub: '三幕入局 · 五分钟', ink: 'teal', flag: !tutorialDone },
-    { key: 'ai', glyph: '弈', title: 'AI 对战', sub: '三种性格 · 三档赌局', ink: 'blood' },
-    { key: 'pvp', glyph: '决', title: '真人对战', sub: '房间码 · 全额买入', ink: 'blood' },
-    { key: 'dossier', glyph: '档', title: '密 档', sub: '你的出牌倾向', ink: 'amber' },
-    { key: 'ledger', glyph: '榜', title: '血 榜', sub: '谁主宰这座大厅', ink: 'amber' },
-    { key: 'shop', glyph: '铺', title: '当 铺', sub: '给这间房换个排面', ink: 'amber' },
-  ];
-
   return (
     // `fixed`, not `absolute`: the scene layer beneath is fixed and the tree has no
     // positioned ancestor, so the two would otherwise resolve against different
@@ -1278,172 +1322,33 @@ function HubScreen({ tutorialDone, sitting, onEnter }: {
           <Flourish flip />
         </div>
       </div>
-
-      {/* Floor haze — gives the cards something to sit against without a hard band */}
+      {/* Floor haze — the cards need something to sit against without a hard band */}
       <div className="absolute bottom-0 inset-x-0 h-56 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
 
-      {/* The dock. Centring lives on THIS flex row, never on a child's max-w + mx-auto —
-          the containing-block mismatch above defeats the latter. pt-4 leaves room for the
-          "从这里开始" flag to sit above the first card instead of being clipped, and the
-          fixed max width keeps the row clear of the settings gear in the corner. */}
-      <div className="absolute bottom-12 inset-x-0 flex justify-center px-6 pt-4 pointer-events-auto">
-        <div className="flex justify-center gap-3 sm:gap-5 w-full max-w-[860px]">
-          {entries.map((e, i) => {
-            const ink = HUB_INK[e.ink];
-            return (
-              <button
-                key={e.key}
-                type="button"
-                onClick={() => { if (!sitting) onEnter(e.key); }}
-                className="group relative flex-1 text-center px-2 pt-7 pb-5 transition-all duration-300 hover:-translate-y-1.5 active:translate-y-0 fade-in-up"
-                style={{
-                  clipPath: HUB_CLIP,
-                  background: 'linear-gradient(180deg, rgba(20,18,14,0.88) 0%, rgba(6,6,10,0.92) 100%)',
-                  boxShadow: `inset 0 0 0 1px rgba(${ink.rgb},0.22), 0 14px 30px rgba(0,0,0,0.6)`,
-                  backdropFilter: 'blur(4px)',
-                  animationDelay: `${200 + i * 80}ms`,
-                }}
-              >
-                {/* Colour rule across the top — the card's identity, brightening on hover */}
-                <span
-                  className="absolute top-0 inset-x-0 h-[2px] transition-all duration-300 pointer-events-none"
-                  style={{
-                    background: `linear-gradient(to right, transparent, rgba(${ink.rgb},0.9), transparent)`,
-                    boxShadow: `0 0 10px rgba(${ink.rgb},0.5)`,
-                  }}
-                />
-                {/* Warm wash rising on hover */}
-                <span
-                  className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-                  style={{ background: `linear-gradient(to top, rgba(${ink.rgb},0.14) 0%, transparent 65%)` }}
-                />
-                {/* Hairline inner frame, revealed on hover */}
-                <span
-                  className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-                  style={{ inset: '5px', clipPath: HUB_CLIP, border: `1px solid rgba(${ink.rgb},0.35)` }}
-                />
-
-                {e.flag && (
-                  <span
-                    className="absolute -top-3 left-1/2 -translate-x-1/2 text-[9px] tracking-[3px] font-display px-2.5 py-[3px] whitespace-nowrap z-20"
-                    style={{
-                      color: ink.text,
-                      border: `1px solid rgba(${ink.rgb},0.6)`,
-                      background: '#07070c',
-                      animation: 'pulse-glow 2s ease-in-out infinite',
-                    }}
-                  >
-                    从这里开始
-                  </span>
-                )}
-
-                <p
-                  className="relative font-gothic text-[2.6rem] sm:text-5xl leading-none mb-3.5 transition-transform duration-300 group-hover:scale-110"
-                  style={{ color: ink.text, textShadow: `0 0 24px rgba(${ink.rgb},0.55)` }}
-                >
-                  {e.glyph}
-                </p>
-                <p className="relative font-display font-bold text-sm tracking-[3px] text-text-bright whitespace-nowrap">{e.title}</p>
-                <p className="relative text-[10px] tracking-[2px] text-text-muted font-display mt-1.5 whitespace-nowrap hidden sm:block">{e.sub}</p>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SetupScreen({ onStart, onBack, starting = false, error = null, balance = null, onRelief, reliefBusy = false }: {
-  onStart: (difficulty: 'easy' | 'normal' | 'hard', personality: 'aggressive' | 'cautious' | 'deceptive', buyIn: number) => void;
-  onBack: () => void;
-  starting?: boolean;
-  error?: string | null;
-  balance?: number | null;
-  onRelief?: () => void;
-  reliefBusy?: boolean;
-}) {
-  const [personality, setPersonality] = useState<'aggressive' | 'cautious' | 'deceptive'>('cautious');
-  const [tier, setTier] = useState<StakesTier['key']>('flicker');
-
-  const persos = [
-    { key: 'aggressive' as const, label: '激进', color: 'blood' as const },
-    { key: 'cautious' as const, label: '谨慎', color: 'teal' as const },
-    { key: 'deceptive' as const, label: '诡诈', color: 'amber' as const },
-  ];
-
-  return (
-    <div className="h-full overflow-y-auto flex flex-col items-center justify-center gap-10 px-4 py-10 relative">
-      <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-blood-dim to-transparent" />
-      <BackButton onClick={onBack} />
-      <div className="text-center slide-up">
-        <p className="font-gothic text-cracked text-5xl sm:text-6xl tracking-[10px] text-blood leading-none">弈</p>
-        <p className="text-sm tracking-[6px] text-text-secondary font-display mt-4 uppercase">AI 对 战</p>
-      </div>
-
-      <div className="flex flex-col gap-10 w-full max-w-3xl fade-in-up" style={{ animationDelay: '150ms' }}>
-        <MenuSection title="牌局设置">
-          <div>
-            <div className="flex items-baseline justify-between mb-4">
-              <p className="text-sm tracking-[4px] text-text-secondary uppercase font-display">赌局</p>
-              {balance !== null && (
-                <p className="text-xs tracking-[2px] text-text-dim font-display">
-                  账户余额 <span className="text-amber-bright font-bold text-sm">{balance}</span> 筹码
-                </p>
-              )}
-            </div>
-            <div className="flex gap-4">
-              {STAKES_TIERS.map((t) => (
-                <TierCard key={t.key} tier={t} selected={tier === t.key} onClick={() => setTier(t.key)} />
-              ))}
-            </div>
-            {/* Broke? The house extends a hand — only visible below the cheapest buy-in. */}
-            {balance !== null && balance < 100 && onRelief && (
-              <div className="mt-5 flex items-center justify-between border border-amber/25 bg-black/35 px-5 py-3.5"
-                style={{ boxShadow: 'inset 0 0 14px rgba(0,0,0,0.4)' }}>
-                <div>
-                  <p className="text-sm text-text-secondary tracking-[2px] font-display">余额不足最低买入（100）</p>
-                  <p className="text-[11px] text-text-dim tracking-[2px] font-display mt-1">山穷水尽时，赌场愿意借你一把火</p>
-                </div>
-                <DecoButton color="amber" size="sm" onClick={onRelief} disabled={reliefBusy}>
-                  {reliefBusy ? '领取中…' : '领取救济金 +200'}
-                </DecoButton>
-              </div>
-            )}
-          </div>
-
-          <div>
-            <p className="text-sm tracking-[4px] text-text-secondary uppercase mb-4 font-display">AI 性格</p>
-            <div className="flex gap-4">
-              {persos.map((p) => (
-                <DecoButton key={p.key} onClick={() => setPersonality(p.key)} color={p.color} size="lg" selected={personality === p.key} fullWidth>{p.label}</DecoButton>
-              ))}
-            </div>
-          </div>
-
-          {error && (
-            <div className="border-t border-b border-blood/60 bg-blood-surface/70 px-4 py-2.5 text-center fade-in">
-              <p className="text-blood-glow text-sm tracking-[3px] font-display">{error}</p>
-            </div>
-          )}
-
-          <DecoButton
-            onClick={() => {
-              const t = STAKES_TIERS.find((s) => s.key === tier)!;
-              onStart(t.difficulty, personality, t.buyIn);
-            }}
-            color="blood"
-            size="lg"
-            fullWidth
-            disabled={starting}
+      {/* The fan lives in WebGL, so it is invisible to a keyboard and to a screen reader.
+          These are the same five destinations as real focusable buttons. Without them the
+          hub is simply unusable without a mouse.
+          `focus-within:not-sr-only` matters: a bare sr-only nav means a sighted keyboard
+          user tabs into five controls they cannot see. Focus brings the strip on screen. */}
+      <nav
+        aria-label="大厅"
+        className="sr-only focus-within:not-sr-only focus-within:absolute focus-within:bottom-6 focus-within:inset-x-0 focus-within:z-30 focus-within:flex focus-within:justify-center focus-within:gap-2 pointer-events-auto"
+      >
+        {MENU_ORDER.map((id: MenuCardId) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onEnter(id as HubEntryKey)}
+            className="px-4 py-2 border border-amber/60 bg-black/90 text-text-bright text-sm tracking-[3px] font-display focus:outline-none focus:border-amber-bright focus:text-amber-bright"
           >
-            {starting ? '入 场 中 …' : '开始对局'}
-          </DecoButton>
-        </MenuSection>
-      </div>
+            {MENU_CARDS[id].name}
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
+
 
 // ————————————————————————————— Settings —————————————————————————————
 

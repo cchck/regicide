@@ -509,6 +509,26 @@ lobes"、"upswept lip"。抽象词换来的只是贴图上的花纹，不是几�
 > ⚠️ B3 的 negative 里**必须排掉 smoke/fog** —— 烟是我们代码里的粒子系统画的
 > （`Smoke` 组件，接在 `smokeTip` 上）。让 Meshy 把烟建成几何，只会得到一坨白色多边形。
 
+### ✅ 已交付（2026-08-02）— 附两个坑
+
+三件都进游戏了，压缩后 24.4MB → 0.71MB。但**有两件几何是错的**，修正脚本在
+`scripts/fix-eastern-props.mjs`，必须在 `optimize-models.mjs` 之前跑：
+
+- **`prop_coins` 是立着的。** 最薄轴是 Z（±0.20），最高轴是 Y（±0.95）—— 整串铜钱
+  被生成成一块面朝 ±Z 的薄板，像贴墙的牌子而不是摊在桌上。绕 X 转 -90° 修正。
+  → 教训：prompt 里写了 "lying on a table / flat"，Meshy 照样按正视图出。
+  **收到扁平类物件先量 bbox，最薄的那个轴必须是 Y。**
+
+- **`prop_incense` 带悬空碎片。** 沿 Y 切片：炉身在 [-0.93, -0.19]，中间六个 bin
+  **完全是空的**，然后 [0.46, 0.93] 有 342 个顶点缩在 X[0.34,0.48] Z[0.36,0.46] 一个
+  角落里。那是本该插在灰里的两支香，被甩到了半空。切掉，香改用两根圆柱程序化生成
+  （`PropDef.sticks`），顺带拿到准确的烟源点。
+  → 教训：**negative 里排掉 smoke 不等于香会长对地方。** 细长附属物（香、签、羽毛）
+  Meshy 经常做成不连接的独立块。收到后按主轴切片看有没有断层。
+
+> 几何修正一律在压缩前做。meshopt 会把顶点位置量化成归一化 int16 + 节点级反量化缩放，
+> 压完之后读到的坐标不再是模型空间数值 —— 耳钻那次分裂就是栽在这。
+
 ---
 
 ## 拿到之后
@@ -573,3 +593,132 @@ lobes"、"upswept lip"。抽象词换来的只是贴图上的花纹，不是几�
 
 拿到之后：`useGLTF` 加载 → `createPortal` 到 `Head` bone（和 `eyes` 一样）→ 面具本地坐标
 约 `[0, 0.02, 0.13]`（眼睛在 z=0.11，面具要再往外一点）→ 尺寸按头宽 0.213 反推缩放。
+
+---
+
+# 第五批：东方套补全 + 黄铜耳钻（2026-08-02）
+
+盘过一遍后剩下的**全部**待生成项。设置同前：**智能拓扑 + 三角面 + 30000 面 + PBR + GLB**，
+不绑骨、不要 A-pose。
+
+**不需要 Meshy 的三件**（别浪费额度）：
+- `cardBack.gilt` / `cardBack.blood` —— 牌背是平面，canvas 画贴图
+- `dealer.priest / general / child` —— 庄家带骨骼动画，换整模要重绑骨 + 重解 `SEAT_FIX`
+  的三轴胯骨偏移。**建议从 shop.ts 里删掉这三条**，第四批的面具就是它们的替代方案
+
+---
+
+## 为什么是"东方套"
+
+商城现在有一条完整的 Deco 线（装饰艺术赌桌 / 黄铜吊灯 / 鎏金王座 / 午夜沙龙 / 绅士的恶习），
+但东方向只有孤零零两件：`table.jade` 血玉牌桌 和 `props.eastern` 东方局。再补四件就凑成
+**第二条可收集的完整审美线**，玩家有第二个攒金印的目标，而不是买完 Deco 就没东西买了。
+
+补完之后：血玉牌桌 + 东方局 + 太师椅 + 檀木厅 + 宫灯 + 傩面。
+
+---
+
+## ① `seat_taishi` — 太师椅（`seat.taishi` ◈700 · 珍稀）
+
+对面那位坐的东西。参照现有 `chair.glb`（鎏金王座）的体量：高背、有扶手、正面朝镜头。
+
+> A single traditional Chinese taishi armchair, one standalone object, front view.
+> A tall straight rectangular back panel of dark rosewood inlaid with a single oval slab
+> of grey-veined marble at its centre, flat horizontal armrests on curved supports, and a
+> deep carved apron under the seat. Pierced lattice fretwork in the corners of the
+> backrest. Nearly black lacquered rosewood with worn brass corner fittings, and a thin
+> crimson silk cushion on the seat. Heavy, upright, symmetrical.
+
+**Negative:** `person, seated figure, table, desk, room, background, floor, pair of chairs, two chairs, cushion only, stool, folding chair, modern chair, office chair, wheels, low quality`
+
+## ② `column_rosewood` — 檀木格栅立柱（`room.eastern` 之一）
+
+远景立柱，会**复制 4 份**且占满画面高度，所以轮廓比细节重要。参照 `column.glb`。
+
+> A single tall vertical architectural column of dark carved rosewood, one standalone
+> object, front view, standing upright. A square-section post with pierced geometric
+> lattice screens set into its upper two thirds, a lotus-carved capital at the top and a
+> plain stone plinth at the base. Very dark red-brown wood with worn gilt edging on the
+> lattice ribs. Tall and narrow, straight, symmetrical.
+
+**Negative:** `person, room, building, temple, wall, floor, background, multiple columns, colonnade, pagoda, roof, lantern hanging, horizontal, tilted, broken, low quality`
+
+## ③ `ceiling_rosewood` — 藻井（`room.eastern` 之二）
+
+天花板中央装饰，抬头才看得到。参照 `ceiling_rose.glb`：**扁平、朝下、无厚度支撑**。
+
+> A single square coffered ceiling medallion in the Chinese caisson manner, one standalone
+> object, viewed from directly below, flat and shallow. Concentric recessed square and
+> octagonal frames stepping inward to a central carved lotus boss, every frame edged with
+> pierced lattice and painted panels in faded vermilion and jade green. Dark rosewood with
+> flaking gold leaf on the raised mouldings. Flat back, shallow depth.
+
+**Negative:** `person, room, building, temple interior, walls, floor, hanging lamp, chandelier, chain, deep dome, tall, side view, perspective view, low quality`
+
+## ④ `lantern_palace` — 宫灯（`light.palace` ◈850 · 珍稀）
+
+吊灯槽位。会挂在 `CHANDELIER_BOTTOM`，代码按实测半高定位，所以**要一个自带吊挂结构的
+完整灯具**，不需要天花板。参照 `chandelier.glb`。
+
+> A single hanging Chinese palace lantern, one standalone object, front view, hanging.
+> A six-sided lantern with a carved rosewood frame, each panel a pane of aged silk glowing
+> warm amber, painted with faint ink landscapes. A tiered pagoda-style cap above, six
+> small brass bells at the lower corners, and long crimson silk tassels hanging beneath.
+> A short chain and ring at the very top for hanging. Dark wood, tarnished brass, warm
+> translucent silk.
+
+**Negative:** `ceiling, room, background, person, hand holding, pole, stand, floor lamp, table lamp, multiple lanterns, string of lanterns, candle, fire, smoke, low quality`
+
+## ⑤ `mask_nuo` — 傩面（`mask.nuo` ◈1100 · 珍稀）
+
+面具槽位第四件，配东方套。约束同第四批那三条（挂 `Head` bone，背面必须是空的）。
+
+> A single Chinese Nuo opera exorcism mask, one standalone object, front view, hollow on
+> the back. A fierce carved wooden face with bulging round eyes, thick arched brows, bared
+> teeth and a pair of short curved horns at the temples. Painted in cracked vermilion,
+> black and gold lacquer over visible woodgrain, the paint chipped away at the nose and
+> chin. Two cord holes at the sides.
+
+**Negative:** `head, skull, person, mannequin, bust, neck, hair, beard, body, wall, wall mount, stand, display case, solid back, helmet, low quality`
+
+---
+
+## ⑥ `drill_brass` — 黄铜耳钻（`drill.brass` ◈380 · 精制）
+
+### ⚠️ 这条的 prompt 和直觉是反的：**不要针**
+
+现有 `eardrill.glb` 的针是从模型里**切出来**的——`SPIKE_SPLIT_X = -0.5` 配合
+`NEEDLE_MAX_R = 0.16` 做双条件切分，再把切出来的针单独做伸出和旋转。那四个常数是
+**针对那一个模型解出来的**，换个模型全部作废，而且 Meshy 未必给你一根轴向干净的细针
+（第一次那个模型的针实际范围是 x ∈ [-0.953, -0.50]，我按 -0.62 切，直接切在针身中间，
+结果输一局就裂开）。
+
+但代码里**本来就有一根程序化的 shaft**（`TableScene.tsx` 那个 `visible={false}` 的
+cylinder）。所以新钻头只要机身，针我用圆柱画 —— 切分问题直接不存在，顺带还能精确控制
+伸出速度和震动。
+
+> A single brass ear-drilling machine head on an articulated arm mount, one standalone
+> object, side view. A polished brass cylindrical motor housing with cooling fins and a
+> knurled adjustment collar, mounted on a jointed arm with visible pivot bolts and a
+> counterweight at the rear. An empty chuck at the front where a bit would be fitted,
+> its three jaws open and holding nothing. Engraved maker's plate on the housing.
+> Polished yellow brass with tarnish in the recesses, dark steel pivots.
+
+**Negative:** `needle, spike, drill bit, pin, spear, long thin rod, sharp point, person, ear, head, table, floor, stand, tripod, background, dentist chair, low quality`
+
+> `empty chuck ... holding nothing` + negative 里的 `needle / drill bit / spike / long thin
+> rod` 是同一件事说两遍，因为"钻头"这个词天然会拽出一根针。拿到之后先量 bbox：
+> 最长轴不应该超过第二长轴的 2 倍，超了就说明还是长了根针出来。
+
+---
+
+## 拿到之后要写的代码
+
+| 件 | 代码量 | 说明 |
+|---|---|---|
+| 面具 ×4 | 中 | 新槽位 `mask`，`createPortal` 到 `Head` bone，本地约 `[0, 0.02, 0.13]` |
+| 太师椅 | 小 | `SEAT_MODEL` 表加一行 |
+| 宫灯 | 小 | `LIGHT_MODEL` 表加一行 |
+| 檀木厅 ×2 | **中** | `room` 现在是 `look.room === 'room.deco'` 的布尔开关，要改成表驱动 |
+| 黄铜耳钻 | 中 | `DRILL_MODEL` 表 + 把现有那根程序化 shaft 从 `visible={false}` 接出来 |
+

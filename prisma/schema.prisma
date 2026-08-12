@@ -23,6 +23,10 @@ model User {
   // the same stack, so no honest match can ever pay out more than 2× this figure —
   // which turns "client reports any number it likes" into a bounded, closable claim.
   activeStake  Int?
+  // When that stake was posted. Two uses: bounding how many tendency rows one match may
+  // report, and (later) refusing to pay seals for a "match" that ended milliseconds after
+  // it began.
+  stakeAt      DateTime?
   // The buy-in on a live PvP table (set at seating, cleared at settlement). Primary
   // recovery is resume-from-DB (see PvpRoom); pvpStake is the safety net — on boot, any
   // stake whose room could NOT be restored is refunded, so no buy-in ever vanishes.
@@ -40,6 +44,9 @@ model User {
   cardPlayStats  CardPlayStat[]
   cardPlayEvents CardPlayEvent[]
   ownedItems     OwnedItem[]
+
+  // The chips board sorts on this and counts ranks against it on every request.
+  @@index([chips])
 }
 
 enum Role {
@@ -55,10 +62,23 @@ enum CardKind {
 
 // Raw per-round play log — source of truth. One row per round the user played.
 // Keeps full context (round, stakes, outcome) so future analysis can slice any way.
+// Where a row came from, and therefore how much it can be trusted.
+//
+// PVP rows are written by the ws server out of its own authoritative state — the client
+// never touches them, so they cannot be forged. AI rows are POSTed by the browser
+// (/api/stats/play) because the AI match runs there; they're bounded (an open buy-in is
+// required and there's a per-match ceiling) but they are still a claim, not a fact.
+//
+// Keeping them apart is what lets a competitive board be built on the trustworthy half.
+enum PlaySource {
+  AI
+  PVP
+}
+
 model CardPlayEvent {
-  id            String   @id @default(cuid())
+  id            String     @id @default(cuid())
   userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   role          Role // which side the user was on
   card          CardKind // what they played
   round         Int // 1..5 within the set — the key tell in E-Card
@@ -66,9 +86,12 @@ model CardPlayEvent {
   won           Boolean
   folded        Boolean // round ended in a fold (no showdown — play stays private)
   foldedSelf    Boolean // the user was the one who folded
-  createdAt     DateTime @default(now())
+  source        PlaySource @default(AI)
+  createdAt     DateTime   @default(now())
 
   @@index([userId, role])
+  // The per-match ceiling counts a user's recent rows; without this it's a scan.
+  @@index([userId, createdAt])
 }
 
 // Aggregate cache of PUBLIC tendencies — only showdown (non-folded) plays are counted,

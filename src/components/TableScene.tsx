@@ -4,7 +4,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { Environment, Lightformer, MeshReflectorMaterial, useGLTF, useTexture, useProgress } from '@react-three/drei';
 import { EffectComposer, Bloom, Vignette, ToneMapping, N8AO, Noise } from '@react-three/postprocessing';
 import { ToneMappingMode, BlendFunction } from 'postprocessing';
-import { ReactNode, Suspense, createContext, useContext, useRef, useMemo, useState, useEffect } from 'react';
+import { ReactNode, Suspense, createContext, useContext, useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { createPortal } from '@react-three/fiber';
 import { SkeletonUtils } from 'three-stdlib';
 import * as THREE from 'three';
@@ -12,7 +12,10 @@ import { CardType } from '@/lib/types';
 import { useIsTouch } from '@/lib/device';
 import { normalizeLoadout, type Loadout } from '@/lib/shop';
 import { audio } from '@/lib/audio';
-import PlayedCard, { CardMesh } from './Card3D';
+import PlayedCard, { CardMesh, MenuCardMesh, CardBackContext } from './Card3D';
+import { SceneBoundary, SceneFallback, hasWebGL } from './SceneFallback';
+import { MENU_ORDER, MenuCardId } from '@/lib/menuCards';
+import type { CardBackId } from '@/lib/cardArt';
 import ChipEconomy from './Chips3D';
 
 type Personality = 'aggressive' | 'cautious' | 'deceptive';
@@ -25,6 +28,9 @@ const PERSONALITY_COLOR: Record<Personality, string> = {
 
 const FLOOR_Y = -0.55;
 const WALL_H = 7;
+// Units per metre. Every prop and fitting scale is written as (real size × M) ÷ the
+// model's own measured span, so the numbers stay readable as real-world dimensions.
+const M = 1.85;
 const CEILING_Y = FLOOR_Y + WALL_H;
 
 // How low the chandelier is allowed to hang. Bracketed by eye, not derived — at 2.175
@@ -350,6 +356,9 @@ function FinaleLights({ spotRef, ambientRef, hemiRef }: {
   return null;
 }
 
+/** Beat between cards arriving in the hand. */
+const FAN_DEAL_STAGGER = 0.07;
+
 // One card in the held fan. Coordinates are camera-local (z- is forward).
 function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: {
   card: CardType; index: number; count: number; selected: boolean; canSelect: boolean;
@@ -361,14 +370,31 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
   const touch = useIsTouch();
   // If the card unmounts mid-hover (it just got played), don't leave a stuck pointer cursor.
   useEffect(() => () => { document.body.style.cursor = 'auto'; }, []);
+  // Hidden until its deal beat. Set here rather than as a JSX `visible={false}`, which the
+  // reconciler could stamp back over the animation on an incidental re-render.
+  useEffect(() => { if (group.current) group.current.visible = false; }, []);
+  const born = useRef<number | null>(null);
 
   const off = index - (count - 1) / 2;
   // A finger needs more room than a cursor: spread the fan wider on touch so neighbouring
   // cards don't share a tap target.
   const spread = touch ? 0.15 : 0.105;
+  const dealAt = index * FAN_DEAL_STAGGER;
 
   useFrame((state, delta) => {
     if (!group.current) return;
+
+    // The deal. Without this the hide above was permanent — the effect turned the card off
+    // on mount and nothing ever turned it back on, so the whole hand was invisible for the
+    // entire match. Cards arrive one beat apart, left to right.
+    const now = state.clock.getElapsedTime();
+    if (born.current === null) born.current = now;
+    if (now - born.current < dealAt) {
+      group.current.visible = false;
+      return;
+    }
+    group.current.visible = true;
+
     const k = 1 - Math.exp(-delta * 10);
     // Tutorial hint: the guided card breathes upward until the player takes it.
     const hintLift = hinted && !selected ? 0.04 + Math.sin(state.clock.getElapsedTime() * 3) * 0.018 : 0;
@@ -402,6 +428,190 @@ function FanCard({ card, index, count, selected, canSelect, hinted, onSelect }: 
           <planeGeometry args={[1.35, 1.9]} />
         </mesh>
       )}
+    </group>
+  );
+}
+
+// ————————————————————————— The hub's menu, as a hand —————————————————————————
+//
+// Replaces the old dock of five buttons. That dock was five identical tiles of equal
+// weight pasted across the bottom of the render: no hierarchy (对战 looked exactly as
+// important as 血榜, though it's what nearly every visit is for) and it cut the table's
+// gold rim in half. Rearranging it didn't help, because a strip of buttons over a 3D room
+// is the problem.
+//
+// So: the dealer deals you five. Taking one is how you go somewhere — the same gesture as
+// playing a card, learned before the first chip is down, with no UI chrome at all.
+//
+// Dealt FACE DOWN and flipped on hover. That shows off the card back the player bought,
+// and it makes the hub an act rather than a list.
+
+const MENU_DEAL_STAGGER = 0.085;
+
+// Camera-local rest pose for the fan. -0.34 cut the bottom third of every card off the
+// frame; -0.2 overshot and left them floating. Split the difference.
+const FAN_Y = -0.27;
+const FAN_Z = -0.86;
+// Separation between neighbours along the view axis. This was 0.006, barely more than a
+// card's own thickness (0.022 × 0.26 scale ≈ 0.0057), so overlapping faces sat inside each
+// other's depth slice and the sort order between them was a coin flip every frame.
+const FAN_GAP = 0.022;
+
+/** The featured card's ember, keyed to that card's own ink. */
+const FEATURE_LIGHT: Partial<Record<MenuCardId, string>> = {
+  duel: '#ff2a2a',
+  tutorial: '#3fb3b3',
+};
+
+function MenuFanCard({ id, index, count, featured, onPick }: {
+  id: MenuCardId;
+  index: number;
+  count: number;
+  /**
+   * The one card the eye should land on: normally 对战, but 新手引导 until it's done.
+   * It sits higher, comes forward, and is the only card with any light on it — the rest
+   * stay dark, which is what makes it read as a pointer rather than as decoration.
+   */
+  featured: boolean;
+  onPick: (id: MenuCardId) => void;
+}) {
+  const group = useRef<THREE.Group>(null);
+  const [hovered, setHovered] = useState(false);
+  const touch = useIsTouch();
+  const born = useRef<number | null>(null);
+  const hero = featured;
+
+  useEffect(() => () => { document.body.style.cursor = 'auto'; }, []);
+
+  const off = index - (count - 1) / 2;
+  // Wider than the in-match fan: these carry readable names, and on touch each one needs
+  // its own comfortable target.
+  const spread = touch ? 0.21 : 0.178;
+  // The duel card is dealt last, so it lands on top of the others.
+  const dealAt = (hero ? count - 1 : index < count / 2 ? index : index - 1) * MENU_DEAL_STAGGER;
+  // Where this card comes to rest. The hit target below is pinned here and never moves,
+  // which is the whole point — see the comment on it.
+  const restX = off * spread;
+  const restY = FAN_Y - Math.abs(off) * 0.016;
+  const restZ = FAN_Z + index * FAN_GAP;
+
+  // Touch has no hover, so a face-down fan would be unreadable and a tap-to-flip-then-tap
+  // -again scheme makes every destination cost two taps. Instead the deal plays out face
+  // down (the card back still gets its moment) and the whole hand turns over on landing.
+  const [autoFaceUp, setAutoFaceUp] = useState(false);
+  useEffect(() => {
+    if (!touch) return;
+    const t = setTimeout(() => setAutoFaceUp(true), (dealAt + 0.5) * 1000);
+    return () => clearTimeout(t);
+  }, [touch, dealAt]);
+  const faceUp = touch ? autoFaceUp : hovered;
+
+  useFrame((state, delta) => {
+    const g = group.current;
+    if (!g) return;
+    const now = state.clock.getElapsedTime();
+    if (born.current === null) born.current = now;
+    const age = now - born.current - dealAt;
+
+    const k = 1 - Math.exp(-delta * 9);
+    const lift = (hovered ? 0.055 : 0) + (hero ? 0.062 : 0);
+    const tz = restZ + (hero ? 0.05 : 0) + (hovered ? 0.06 : 0);
+
+    if (age < 0) {
+      // Still in the dealer's hand: parked off the top of the frame, unseen.
+      g.visible = false;
+      g.position.set(0, 0.55, -1.5);
+      return;
+    }
+    g.visible = true;
+    g.position.x += (restX - g.position.x) * k;
+    g.position.y += (restY + lift - g.position.y) * k;
+    g.position.z += (tz - g.position.z) * k;
+
+    const rz = -off * 0.13;
+    g.rotation.z += (rz - g.rotation.z) * k;
+    // Face down until you look at it. π → 0.
+    const ry = faceUp ? 0 : Math.PI;
+    g.rotation.y += (ry - g.rotation.y) * (1 - Math.exp(-delta * 11));
+    // Tips up toward the camera as it turns over.
+    g.rotation.x += ((-0.18 - (faceUp ? 0.1 : 0)) - g.rotation.x) * k;
+  });
+
+  // Hover state stays LOCAL to the card. Lifting it into GameBoard so a DOM label could
+  // read it re-rendered the whole scene on every mouse move — and the label was redundant
+  // anyway, because the card face has its own name printed on it.
+  const enter = () => { setHovered(true); document.body.style.cursor = 'pointer'; };
+  const leave = () => { setHovered(false); document.body.style.cursor = 'auto'; };
+
+  return (
+    <>
+      {/*
+        The hit target, and it is deliberately NOT part of the animated card.
+
+        Putting the handlers on the card itself made it flicker: hovering rotates the card
+        (π → 0) and lifts it, which drags its geometry out from under the cursor, which
+        fires onPointerOut, which rotates it back under the cursor, which fires
+        onPointerOver — an oscillation that reads as strobing. This plane sits at the
+        card's rest pose and never moves, so the hover state can't chase its own tail.
+        Slightly oversized, which also gives a fingertip somewhere forgiving to land.
+      */}
+      <mesh
+        position={[restX, restY, restZ + 0.09]}
+        rotation={[-0.18, 0, -off * 0.13]}
+        scale={0.26}
+        visible={false}
+        onClick={(e) => { e.stopPropagation(); onPick(id); }}
+        onPointerOver={touch ? undefined : (e) => { e.stopPropagation(); enter(); }}
+        onPointerOut={touch ? undefined : leave}
+      >
+        <planeGeometry args={[touch ? 1.6 : 1.15, touch ? 2.1 : 1.6]} />
+      </mesh>
+
+      <group
+        ref={group}
+        position={[0, 0.55, -1.5]}
+        rotation={[-0.18, Math.PI, 0]}
+        scale={0.26}
+        // No pointer handlers here — see above.
+        raycast={() => null}
+      >
+        <MenuCardMesh faceId={id} />
+        {/* The only light in the fan. Everything else stays dark, so this is the card the
+            eye finds first — even face-down, even before the deal has finished. */}
+        {hero && (
+          <pointLight
+            position={[0, 0, 0.5]}
+            color={FEATURE_LIGHT[id] ?? '#ff2a2a'}
+            intensity={hovered ? 1.9 : 1.0}
+            distance={1.5}
+            decay={2}
+          />
+        )}
+      </group>
+    </>
+  );
+}
+
+function MenuFan({ tutorialDone, onPick }: {
+  tutorialDone: boolean;
+  onPick: (id: MenuCardId) => void;
+}) {
+  // Until the tutorial is done it is the card being pointed at; after that the spotlight
+  // goes back to 对战, which is what nearly every later visit is for. The old dock had a
+  // "从这里开始" tag doing this job; a lit card does it without any UI.
+  const featuredId: MenuCardId = tutorialDone ? 'duel' : 'tutorial';
+  return (
+    <group>
+      {MENU_ORDER.map((id, i) => (
+        <MenuFanCard
+          key={id}
+          id={id}
+          index={i}
+          count={MENU_ORDER.length}
+          featured={id === featuredId}
+          onPick={onPick}
+        />
+      ))}
     </group>
   );
 }
@@ -816,6 +1026,944 @@ function ArchWindow({ position, rotationY }: { position: [number, number, number
   );
 }
 
+// ————————————————————————— 沉船宴会厅 —————————————————————————
+//
+// A liner's dining saloon, gone down and settled on its side. Almost none of this is
+// modelled: the room slot is already ~85% procedural (walls, drapes, banners, railing,
+// carpet and ceiling are all code — only the column, the sconce and the ceiling rose are
+// GLBs), and what actually sells a flooded room is light and motion, which no amount of
+// model generation can give you.
+//
+// The whole effect rests on one contrast: the ARCHITECTURE is tilted and the WATER IS NOT.
+// A level waterline cutting across a canted room is what the eye reads as "this ship is
+// going down", and it costs one rotation on a group.
+
+/** How far the wreck leans. Small on purpose — enough to unsettle, not enough to notice. */
+const WRECK_TILT = 0.042;
+/** Waterline, in world Y. Floor is -0.55, felt is 0.84: shin-deep, well clear of the cards. */
+const WATER_Y = 0.12;
+
+/**
+ * Caustics, as a canvas texture. Summed sine bands raised to a high power leave thin
+ * bright filaments — the same trick a shader would use, baked once at 256² and then just
+ * scrolled, so it costs one texture and no per-frame maths.
+ */
+function makeCausticTexture(size = 256): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d')!;
+  const img = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // Wrapping frequencies (whole multiples of 2π across the texture) so it tiles.
+      const u = (x / size) * Math.PI * 2;
+      const v = (y / size) * Math.PI * 2;
+      const s =
+        Math.sin(u * 3 + Math.cos(v * 2) * 1.4) +
+        Math.sin(v * 4 - Math.cos(u * 3) * 1.1) +
+        Math.sin((u + v) * 2.5);
+      const b = Math.pow(Math.max(0, s / 3), 6);
+      const i = (y * size + x) * 4;
+      img.data[i] = 255;
+      img.data[i + 1] = 252;
+      img.data[i + 2] = 226;
+      img.data[i + 3] = Math.min(255, b * 900);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+let causticCache: THREE.CanvasTexture | null = null;
+const causticTexture = () => (causticCache ??= makeCausticTexture());
+
+/**
+ * Light dancing on the ceiling, refracted up off the water. Two additive sheets at
+ * different scales drifting in different directions — one alone reads as a moving pattern,
+ * two crossing read as water.
+ */
+function Caustics() {
+  const a = useRef<THREE.Mesh>(null);
+  const b = useRef<THREE.Mesh>(null);
+  const tex = useMemo(() => causticTexture(), []);
+  const matA = useMemo(() => new THREE.MeshBasicMaterial({
+    map: tex.clone(), transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }), [tex]);
+  const matB = useMemo(() => new THREE.MeshBasicMaterial({
+    map: tex.clone(), transparent: true, opacity: 0.32,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }), [tex]);
+  useEffect(() => {
+    (matA.map as THREE.Texture).repeat.set(3, 3);
+    (matB.map as THREE.Texture).repeat.set(1.7, 1.7);
+    return () => { matA.map?.dispose(); matB.map?.dispose(); matA.dispose(); matB.dispose(); };
+  }, [matA, matB]);
+
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime();
+    const ma = matA.map, mb = matB.map;
+    if (ma) ma.offset.set(t * 0.021, t * 0.013);
+    if (mb) mb.offset.set(-t * 0.014, t * 0.019);
+    // A swell in brightness, but a shallow one. This used to range 0.26–0.50, a 2:1 swing
+    // that made the water light look like it was switching on and off — and with the
+    // bulkhead lamps stuttering at the same time, the two read as one unstable effect
+    // rather than as water. The drifting UVs already carry the motion; brightness only has
+    // to breathe.
+    matA.opacity = 0.46 + Math.sin(t * 0.5) * 0.05;
+    matB.opacity = 0.3 + Math.sin(t * 0.37 + 2) * 0.04;
+  });
+
+  const y = WALL_H + FLOOR_Y - 0.06;
+  return (
+    <>
+      <mesh ref={a} position={[0, y, -0.5]} rotation={[Math.PI / 2, 0, 0]} material={matA} renderOrder={1}>
+        <planeGeometry args={[16, 17]} />
+      </mesh>
+      <mesh ref={b} position={[0, y - 0.02, -0.5]} rotation={[Math.PI / 2, 0, 0.7]} material={matB} renderOrder={1}>
+        <planeGeometry args={[16, 17]} />
+      </mesh>
+    </>
+  );
+}
+
+/**
+ * The flood. Level, while everything around it is not.
+ *
+ * On the top tier this is a real reflector, because the room upside-down in black water is
+ * the whole picture. It renders the scene a second time, so the lower tiers get a plain
+ * dark surface with the same drifting caustic sheen on top — which still reads, because
+ * the caustics carry the motion.
+ */
+function FloodWater({ reflective }: { reflective: boolean }) {
+  const sheen = useRef<THREE.Mesh>(null);
+  const tex = useMemo(() => causticTexture().clone(), []);
+  const sheenMat = useMemo(() => new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, opacity: 0.14,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }), [tex]);
+  useEffect(() => {
+    tex.repeat.set(5, 5);
+    return () => { tex.dispose(); sheenMat.dispose(); };
+  }, [tex, sheenMat]);
+
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime();
+    tex.offset.set(t * 0.008, -t * 0.011);
+    // The surface itself breathes a few millimetres. Enough that the waterline against the
+    // walls is never perfectly still.
+    if (sheen.current) sheen.current.position.y = WATER_Y + 0.004 + Math.sin(t * 0.6) * 0.006;
+  });
+
+  return (
+    <>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, WATER_Y, -1]}>
+        <planeGeometry args={[30, 30]} />
+        {reflective ? (
+          <MeshReflectorMaterial
+            blur={[300, 90]}
+            resolution={512}
+            mixBlur={1.1}
+            mixStrength={7}
+            depthScale={1.2}
+            minDepthThreshold={0.3}
+            maxDepthThreshold={1.5}
+            color="#0b1416"
+            roughness={0.35}
+            metalness={0.5}
+            mirror={0.62}
+          />
+        ) : (
+          <meshStandardMaterial color="#0b1416" roughness={0.28} metalness={0.55} transparent opacity={0.94} />
+        )}
+      </mesh>
+      <mesh ref={sheen} rotation={[-Math.PI / 2, 0, 0]} position={[0, WATER_Y + 0.004, -1]} material={sheenMat} renderOrder={1}>
+        <planeGeometry args={[30, 30]} />
+      </mesh>
+    </>
+  );
+}
+
+/** What's left floating. A handful of slabs turning slowly — the room's own wreckage. */
+function Flotsam() {
+  const group = useRef<THREE.Group>(null);
+  const bits = useMemo(() => (
+    Array.from({ length: 9 }, (_, i) => {
+      const a = (i / 9) * Math.PI * 2 + i * 0.7;
+      const r = 3.2 + ((i * 37) % 100) / 100 * 2.6;
+      return {
+        x: Math.cos(a) * r,
+        z: Math.sin(a) * r - 1,
+        w: 0.18 + ((i * 53) % 100) / 100 * 0.5,
+        d: 0.12 + ((i * 91) % 100) / 100 * 0.3,
+        spin: (i % 2 ? 1 : -1) * (0.03 + ((i * 17) % 50) / 1000),
+        phase: i * 1.1,
+      };
+    })
+  ), []);
+
+  useFrame((state) => {
+    const g = group.current;
+    if (!g) return;
+    const t = state.clock.getElapsedTime();
+    g.children.forEach((c, i) => {
+      const b = bits[i];
+      c.rotation.y = t * b.spin + b.phase;
+      c.position.y = WATER_Y + 0.012 + Math.sin(t * 0.5 + b.phase) * 0.012;
+      c.rotation.z = Math.sin(t * 0.4 + b.phase) * 0.05;
+    });
+  });
+
+  return (
+    <group ref={group}>
+      {bits.map((b, i) => (
+        <mesh key={i} position={[b.x, WATER_Y + 0.012, b.z]} castShadow={false}>
+          <boxGeometry args={[b.w, 0.018, b.d]} />
+          <meshStandardMaterial color="#241a12" roughness={0.95} metalness={0} emissive="#0a0806" emissiveIntensity={0.4} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ————————————————————————— The wreck's shell —————————————————————————
+//
+// The first pass at this room just flooded the salon: same red pilasters, same arched city
+// windows, same warm gold light. Water in a drawing room is a leak, not a shipwreck. This
+// replaces the architecture outright.
+//
+// The tells that make a room read as a ship rather than a building: riveted plate instead
+// of plaster, transverse frames instead of coffered beams, and a ceiling low enough to
+// feel like a deck above you.
+
+const STEEL_MAT = { color: '#1b2226', roughness: 0.72, metalness: 0.42, emissive: '#0a1013', emissiveIntensity: 0.45 };
+const PANEL_MAT = { color: '#2a1c14', roughness: 0.86, metalness: 0.06, emissive: '#0e0806', emissiveIntensity: 0.4 };
+const BRASS_MAT = { color: '#5a4a22', roughness: 0.45, metalness: 0.8, emissive: '#1e1808', emissiveIntensity: 0.45 };
+/** Top of the dado panelling. Below it wood, above it bare plate. */
+const DADO_Y = 1.45;
+
+const RIVET_DUMMY = new THREE.Object3D();
+
+/**
+ * Rivet rows along the plate seams. Several hundred of them, so one InstancedMesh — as
+ * individual meshes this would be the heaviest thing in the room by draw calls alone.
+ */
+function Rivets() {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const spots = useMemo(() => {
+    const out: [number, number, number][] = [];
+    // Horizontal seams on both side walls, above the dado.
+    for (const side of [-1, 1]) {
+      for (const y of [DADO_Y + 0.12, 3.1, 4.9]) {
+        for (let z = -8; z <= 7; z += 0.42) out.push([side * 7.12, y, z]);
+      }
+    }
+    // And across the back wall.
+    for (const y of [DADO_Y + 0.12, 3.1, 4.9]) {
+      for (let x = -7; x <= 7; x += 0.42) out.push([x, y, -8.12]);
+    }
+    return out;
+  }, []);
+
+  useEffect(() => {
+    const m = ref.current;
+    if (!m) return;
+    spots.forEach((p, i) => {
+      RIVET_DUMMY.position.set(p[0], p[1], p[2]);
+      RIVET_DUMMY.updateMatrix();
+      m.setMatrixAt(i, RIVET_DUMMY.matrix);
+    });
+    m.instanceMatrix.needsUpdate = true;
+  }, [spots]);
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, spots.length]} castShadow={false}>
+      <sphereGeometry args={[0.035, 6, 4]} />
+      <meshStandardMaterial color="#2e373c" roughness={0.55} metalness={0.7} />
+    </instancedMesh>
+  );
+}
+
+// Fittings. Every scale is (target metres × M) ÷ the model's own measured span, so the
+// numbers below are readable as "how big is this thing really" rather than magic factors.
+const SHIP_TUNE = {
+  brass: (m: THREE.MeshStandardMaterial) => { m.roughness = 0.52; m.metalness = 0.78; },
+  steel: (m: THREE.MeshStandardMaterial) => { m.roughness = 0.68; m.metalness = 0.55; },
+  crystal: (m: THREE.MeshStandardMaterial) => { m.roughness = 0.3; m.metalness = 0.5; },
+};
+
+/** 45cm porthole. Measured span 1.90 across, 0.67 deep. */
+function Porthole({ side, z }: { side: -1 | 1; z: number }) {
+  const model = useProp('/models/ship_porthole.glb', SHIP_TUNE.brass);
+  const s = (0.45 * M) / 1.9;
+  return (
+    <primitive
+      object={model}
+      // Proud of the wall by roughly its own depth, so the frame reads as set into plate.
+      position={[side * (7.14 - (0.67 * s) / 2), 2.6, z]}
+      rotation={[0, side * -Math.PI / 2, 0]}
+      scale={s}
+    />
+  );
+}
+
+/** 1.9m watertight door. Measured 1.91 tall, minY -0.953. */
+function BulkheadHatch() {
+  const model = useProp('/models/ship_hatch.glb', SHIP_TUNE.steel);
+  const s = (1.9 * M) / 1.91;
+  return (
+    <primitive
+      object={model}
+      // Sill on the deck: lift by however far the model's own floor sits below its origin.
+      position={[0, FLOOR_Y + 0.953 * s, 7.36]}
+      rotation={[0, Math.PI, 0]}
+      scale={s}
+    />
+  );
+}
+
+/** ~1m balustrade panel, repeated across the back of the saloon. */
+const RAIL_SCALE = (1.0 * M) / 1.91;
+
+function StairPanel({ x }: { x: number }) {
+  // One useProp per panel. useProp clones and memoises internally, so this gives each
+  // panel its own object — calling it once and cloning by hand in the parent would rebuild
+  // every clone on every render, since that clone isn't memoised.
+  const model = useProp('/models/ship_balustrade.glb', SHIP_TUNE.brass);
+  return <primitive object={model} position={[x, FLOOR_Y + 0.953 * RAIL_SCALE, -7.1]} scale={RAIL_SCALE} />;
+}
+
+function GrandStairRail() {
+  const w = 1.69 * RAIL_SCALE;
+  return <>{[-2, -1, 0, 1, 2].map((i) => <StairPanel key={i} x={i * w} />)}</>;
+}
+
+/**
+ * The saloon's chandelier, down in the water. Deliberately NOT inside the tilted group —
+ * it fell, so it lies with the water, not with the ship.
+ * Measured [0.89, 1.31, 1.91] with its long axis on Z, i.e. already on its side.
+ */
+function SunkenChandelier() {
+  const model = useProp('/models/ship_chandelier_sunk.glb', SHIP_TUNE.crystal);
+  const s = (1.2 * M) / 1.91;
+  return (
+    <primitive
+      object={model}
+      // Low side of the wreck is −X: the room rotates +Z, which lifts +X and drops −X.
+      // Centred on the waterline so it sits half in, half out.
+      position={[-3.6, WATER_Y, -3.2]}
+      rotation={[0.12, 0.9, -0.22]}
+      scale={s}
+    />
+  );
+}
+
+/**
+ * What came loose. Like the chandelier these sit OUTSIDE the tilted group — they float, so
+ * they answer to the water, not to the ship. That contrast is what makes the list legible:
+ * the eye compares level objects against canted architecture and reads "she's over", rather
+ * than "the camera is crooked".
+ *
+ * Measured: chair [1.38, 1.71, 1.89] (long axis Z — already on its side, as asked for);
+ * tray [1.91, 0.48, 1.36] (flat, thin on Y).
+ */
+function Adrift() {
+  const chair = useProp('/models/ship_chair.glb', SHIP_TUNE.steel);
+  const tray = useProp('/models/ship_service.glb', SHIP_TUNE.brass);
+  const hat = useProp('/models/wreck_hat.glb', SHIP_TUNE.steel);
+  // Rejoined offline — the GLB arrived in two pieces with 0.87 of nothing between the
+  // shoulder and the base. See scripts/fix-wreck-props.mjs.
+  const bottle = useProp('/models/wreck_bottle.glb', SHIP_TUNE.crystal);
+  const group = useRef<THREE.Group>(null);
+  const chairS = (0.9 * M) / 1.89;
+  const trayS = (0.5 * M) / 1.91;
+  const hatS = (0.55 * M) / 1.906;
+  const bottleS = (0.31 * M) / 1.028;
+
+  // One slow swell, everything on it a beat apart.
+  useFrame((state) => {
+    const g = group.current;
+    if (!g) return;
+    const t = state.clock.getElapsedTime();
+    g.children.forEach((c, i) => {
+      c.position.y = (c.userData.baseY as number) + Math.sin(t * 0.5 + i * 2.1) * 0.013;
+      c.rotation.z = (c.userData.baseRz as number) + Math.sin(t * 0.38 + i * 1.4) * 0.022;
+    });
+  });
+
+  // Waterlogged velvet: it rides low, only the back breaking the surface.
+  const chairY = WATER_Y - 0.3;
+  const trayY = WATER_Y + 0.03;
+  return (
+    <group ref={group}>
+      <primitive
+        object={chair}
+        position={[-4.5, chairY, 1.1]}
+        rotation={[0.18, -0.9, 0.22]}
+        scale={chairS}
+        userData={{ baseY: chairY, baseRz: 0.22 }}
+      />
+      <primitive
+        object={tray}
+        position={[2.5, trayY, 1.7]}
+        rotation={[0, 0.4, 0.05]}
+        scale={trayS}
+        userData={{ baseY: trayY, baseRz: 0.05 }}
+      />
+      {/* Silk soaks: it sits half under, brim awash. */}
+      <primitive
+        object={hat}
+        position={[-1.6, WATER_Y - 0.06, 3.4]}
+        rotation={[0.1, 1.2, -0.14]}
+        scale={hatS}
+        userData={{ baseY: WATER_Y - 0.06, baseRz: -0.14 }}
+      />
+      {/* Corked, so it floats high and rolls. */}
+      <primitive
+        object={bottle}
+        position={[3.7, WATER_Y + 0.02, 3.1]}
+        rotation={[0, -0.5, 0.08]}
+        scale={bottleS}
+        userData={{ baseY: WATER_Y + 0.02, baseRz: 0.08 }}
+      />
+    </group>
+  );
+}
+
+// ————————————————————————— The promenade glass —————————————————————————
+//
+// Portholes weren't enough. They read as "old building with round windows" — you can only
+// tell a room is underwater if you can SEE the water, and 45cm of dark glass six metres
+// away shows you nothing.
+//
+// So the back wall opens onto the promenade deck, and the promenade is flooded: a wall of
+// glass with the sea standing behind it, lit from far above. It also does the composition a
+// favour — the dealer now sits silhouetted against it.
+
+const GLASS_HALF = 4.6;
+const GLASS_BOT = 0.45;
+const GLASS_TOP = 4.5;
+const GLASS_Z = -8.16;
+
+/** Depth gradient for the water beyond: paler up top where the surface is, black below. */
+function makeDepthTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 128;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createLinearGradient(0, 0, 0, 128);
+  g.addColorStop(0, '#2c7d86');
+  g.addColorStop(0.35, '#12454e');
+  g.addColorStop(0.75, '#08222a');
+  g.addColorStop(1, '#040e13');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 128);
+  return new THREE.CanvasTexture(c);
+}
+let depthTexCache: THREE.CanvasTexture | null = null;
+const depthTexture = () => (depthTexCache ??= makeDepthTexture());
+
+const SILT_DUMMY = new THREE.Object3D();
+
+/** Silt and bubbles hanging in the water beyond the glass. Instanced; drifts upward. */
+function Silt({ count = 70 }: { count?: number }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const seeds = useMemo(() => Array.from({ length: count }, (_, i) => ({
+    x: (((i * 37) % 100) / 100 - 0.5) * 11,
+    y: ((i * 61) % 100) / 100 * 7 - 0.5,
+    z: -8.6 - ((i * 23) % 100) / 100 * 3.4,
+    s: 0.012 + ((i * 17) % 100) / 100 * 0.028,
+    rise: 0.05 + ((i * 41) % 100) / 100 * 0.12,
+    sway: ((i * 13) % 100) / 100 * 2,
+  })), [count]);
+
+  useFrame((state) => {
+    const m = ref.current;
+    if (!m) return;
+    const t = state.clock.getElapsedTime();
+    seeds.forEach((p, i) => {
+      // Wraps back to the bottom rather than being respawned — no allocation, no popping
+      // anywhere the eye is actually looking.
+      const y = ((p.y + t * p.rise) % 7.5) - 0.5;
+      SILT_DUMMY.position.set(p.x + Math.sin(t * 0.3 + p.sway) * 0.25, y, p.z);
+      SILT_DUMMY.scale.setScalar(p.s);
+      SILT_DUMMY.updateMatrix();
+      m.setMatrixAt(i, SILT_DUMMY.matrix);
+    });
+    m.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
+      <sphereGeometry args={[1, 5, 4]} />
+      <meshBasicMaterial color="#9fdce0" transparent opacity={0.3} toneMapped={false} depthWrite={false} />
+    </instancedMesh>
+  );
+}
+
+// ————————————————————————— What's out there —————————————————————————
+//
+// The room read as empty in the middle distance: nothing between the table and the walls,
+// and a bare sheet of water. These fill that band. Everything here is procedural — the
+// point is motion, and motion is the one thing a generated model cannot bring.
+
+/** Soft-edged blob, for silhouettes that must never show an outline. */
+function makeBlobTexture(size = 128): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, 'rgba(0,0,0,1)');
+  g.addColorStop(0.45, 'rgba(0,0,0,0.85)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(c);
+}
+let blobCache: THREE.CanvasTexture | null = null;
+const blobTexture = () => (blobCache ??= makeBlobTexture());
+
+/**
+ * Something big goes past the glass. It never resolves — you get a darkening that slides
+ * across and is gone, and no confirmation of what it was.
+ *
+ * That refusal is the whole point, and it is also this game's subject: you never find out
+ * what is sitting opposite you either. A modelled creature would answer the question and
+ * kill it.
+ */
+function PassingShadow() {
+  const ref = useRef<THREE.Mesh>(null);
+  const mat = useRef<THREE.MeshBasicMaterial>(null);
+  const tex = useMemo(() => blobTexture(), []);
+  /** Seconds between passes, and how long one takes. Long gaps: it must feel like a thing
+   *  that happens TO you, not like a looping animation. */
+  const PERIOD = 38;
+  const CROSS = 7.5;
+
+  useFrame((state) => {
+    const m = ref.current;
+    if (!m || !mat.current) return;
+    const phase = (state.clock.getElapsedTime() + 9) % PERIOD;
+    if (phase > CROSS) { m.visible = false; return; }
+    m.visible = true;
+    const p = phase / CROSS;
+    m.position.x = -16 + p * 32;
+    m.position.y = 2.4 + Math.sin(p * Math.PI) * 0.9;
+    // Fades in and out at the edges of the pass, so it never has a start or an end.
+    mat.current.opacity = Math.sin(p * Math.PI) * 0.68;
+  });
+
+  return (
+    <mesh ref={ref} position={[-16, 2.4, -10.4]} visible={false}>
+      <planeGeometry args={[9, 3.4]} />
+      <meshBasicMaterial ref={mat} map={tex} color="#020a0c" transparent opacity={0} depthWrite={false} toneMapped={false} />
+    </mesh>
+  );
+}
+
+const FISH_DUMMY = new THREE.Object3D();
+
+/** A school beyond the glass. Pale, small, and always turning — the only living thing left. */
+function FishSchool({ count = 22 }: { count?: number }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const seeds = useMemo(() => Array.from({ length: count }, (_, i) => ({
+    r: 1.4 + ((i * 29) % 100) / 100 * 2.2,
+    a: (i / count) * Math.PI * 2,
+    y: 1.2 + ((i * 53) % 100) / 100 * 2.6,
+    z: -9.4 - ((i * 37) % 100) / 100 * 2.2,
+    speed: 0.22 + ((i * 19) % 100) / 100 * 0.16,
+    bob: ((i * 43) % 100) / 100 * 6,
+  })), [count]);
+
+  useFrame((state) => {
+    const m = ref.current;
+    if (!m) return;
+    const t = state.clock.getElapsedTime();
+    seeds.forEach((f, i) => {
+      const a = f.a + t * f.speed;
+      const x = Math.cos(a) * f.r * 2.2;
+      const y = f.y + Math.sin(t * 0.7 + f.bob) * 0.22;
+      FISH_DUMMY.position.set(x, y, f.z + Math.sin(a) * 0.8);
+      // Nose along the direction of travel.
+      FISH_DUMMY.rotation.set(0, -a + Math.PI / 2, Math.sin(t * 3 + f.bob) * 0.16);
+      FISH_DUMMY.scale.set(0.055, 0.03, 0.15);
+      FISH_DUMMY.updateMatrix();
+      m.setMatrixAt(i, FISH_DUMMY.matrix);
+    });
+    m.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
+      <octahedronGeometry args={[1, 0]} />
+      <meshBasicMaterial color="#a8ccc8" transparent opacity={0.5} toneMapped={false} depthWrite={false} />
+    </instancedMesh>
+  );
+}
+
+/** One jellyfish: a bell that pulses, and trails. Slow enough to be unsettling. */
+function Jelly({ x, z, y0, seed, scale }: { x: number; z: number; y0: number; seed: number; scale: number }) {
+  const bell = useRef<THREE.Mesh>(null);
+  const group = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime() + seed;
+    const g = group.current;
+    if (!g || !bell.current) return;
+    // Drifts up and wraps, like the silt.
+    g.position.y = ((y0 + t * 0.09) % 6.5) - 0.4;
+    g.position.x = x + Math.sin(t * 0.16) * 0.5;
+    // The pulse: a quick contraction, then a long relaxation. Not a sine — a sine reads
+    // as breathing, and this should read as swimming.
+    const p = (t * 0.42) % 1;
+    const squash = p < 0.25 ? 1 - Math.sin(p / 0.25 * Math.PI) * 0.28 : 1 - (1 - p) * 0.05;
+    bell.current.scale.set(scale * (2 - squash), scale * squash, scale * (2 - squash));
+  });
+  return (
+    <group ref={group} position={[x, y0, z]}>
+      <mesh ref={bell}>
+        <sphereGeometry args={[1, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.62]} />
+        <meshBasicMaterial color="#cfe8ff" transparent opacity={0.22} side={THREE.DoubleSide} depthWrite={false} toneMapped={false} />
+      </mesh>
+      {/* The faint light inside is what makes them read at this distance. */}
+      <mesh>
+        <sphereGeometry args={[scale * 0.42, 8, 6]} />
+        <meshBasicMaterial color="#8fd8ff" transparent opacity={0.3} toneMapped={false} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function Jellies() {
+  return (
+    <>
+      <Jelly x={-3.4} z={-9.8} y0={0.6} seed={0} scale={0.34} />
+      <Jelly x={2.1} z={-10.6} y0={3.2} seed={4.3} scale={0.26} />
+      <Jelly x={4.4} z={-9.2} y0={5.1} seed={8.1} scale={0.3} />
+    </>
+  );
+}
+
+/**
+ * The hand that was on the table when she went down, floating where it landed. Reuses
+ * CardMesh, so these are the same cards — including whatever back the player has bought.
+ */
+function DriftingCards() {
+  const group = useRef<THREE.Group>(null);
+  const cards = useMemo(() => ([
+    { x: -1.9, z: 2.6, type: 'citizen' as CardType, faceDown: false, rz: 0.4 },
+    { x: -2.6, z: 1.2, type: 'slave' as CardType, faceDown: true, rz: -0.9 },
+    { x: 3.1, z: 2.9, type: 'citizen' as CardType, faceDown: true, rz: 1.3 },
+    { x: 1.4, z: 3.6, type: 'emperor' as CardType, faceDown: false, rz: -0.3 },
+    { x: -4.1, z: -1.4, type: 'citizen' as CardType, faceDown: true, rz: 2.1 },
+    { x: 4.2, z: -0.6, type: 'citizen' as CardType, faceDown: false, rz: 0.8 },
+  ]), []);
+
+  useFrame((state) => {
+    const g = group.current;
+    if (!g) return;
+    const t = state.clock.getElapsedTime();
+    g.children.forEach((c, i) => {
+      c.position.y = WATER_Y + 0.006 + Math.sin(t * 0.5 + i * 1.7) * 0.011;
+      c.rotation.x = -Math.PI / 2 + Math.sin(t * 0.34 + i) * 0.045;
+    });
+  });
+
+  return (
+    <group ref={group}>
+      {cards.map((c, i) => (
+        <group
+          key={i}
+          position={[c.x, WATER_Y + 0.006, c.z]}
+          rotation={[-Math.PI / 2, c.faceDown ? Math.PI : 0, c.rz]}
+          scale={0.34}
+        >
+          <CardMesh type={c.type} castShadow={false} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
+/**
+ * Wall dressing. The clock and the plaque give the wreck a time of death and a name — the
+ * two things that turn "a flooded room" into "a particular ship that went down".
+ *
+ * Bolted on, so these live inside the tilted group with the rest of the hull.
+ */
+function WreckWallDressing() {
+  const clock = useProp('/models/wreck_clock.glb', SHIP_TUNE.brass);
+  const plaque = useProp('/models/wreck_plaque.glb', SHIP_TUNE.brass);
+  const ring = useProp('/models/wreck_lifering.glb', SHIP_TUNE.steel);
+  // Measured spans: clock 1.906 across, plaque 1.898 across, ring 1.914 across.
+  return (
+    <group>
+      {/* Both sit on the steel either side of the promenade glass. */}
+      <primitive object={clock} position={[6.0, 3.1, -8.1]} scale={(0.5 * M) / 1.906} />
+      <primitive object={plaque} position={[-6.0, 2.9, -8.1]} scale={(0.75 * M) / 1.898} />
+      {/* On the side wall, between two portholes. Faces ±Z in model space, so it turns. */}
+      <primitive
+        object={ring}
+        position={[7.06, 2.5, -3.5]}
+        rotation={[0, -Math.PI / 2, 0]}
+        scale={(0.75 * M) / 1.914}
+      />
+    </group>
+  );
+}
+
+function PromenadeGlass() {
+  const depth = useMemo(() => depthTexture(), []);
+  const w = GLASS_HALF * 2;
+  const h = GLASS_TOP - GLASS_BOT;
+  const cy = (GLASS_BOT + GLASS_TOP) / 2;
+
+  return (
+    <group>
+      {/* The sea, standing in the flooded promenade. Unlit on purpose: this is meant to be
+          the brightest thing in the room, and a lit surface here would just go black like
+          everything else. */}
+      <mesh position={[0, cy + 0.6, -11.6]}>
+        <planeGeometry args={[26, 15]} />
+        <meshBasicMaterial map={depth} toneMapped={false} />
+      </mesh>
+
+      <Silt />
+      <FishSchool />
+      <Jellies />
+      <PassingShadow />
+
+      {/* Two shafts coming down from the surface, far off. Angled apart so they don't read
+          as a symmetrical pair of lamps. */}
+      {[[-2.6, 0.09], [3.1, -0.07]].map(([x, tilt], i) => (
+        <mesh key={i} position={[x, cy + 1.4, -10.2]} rotation={[0, 0, tilt]}>
+          <planeGeometry args={[1.5, 13]} />
+          <meshBasicMaterial color="#8fe4ea" transparent opacity={0.055} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+        </mesh>
+      ))}
+
+      {/* The glass itself — barely there, but it catches the room's light and that edge is
+          what tells you there is a barrier rather than open water. */}
+      <mesh position={[0, cy, GLASS_Z]}>
+        <planeGeometry args={[w, h]} />
+        <meshStandardMaterial color="#7fb6bd" transparent opacity={0.1} roughness={0.08} metalness={0.4} depthWrite={false} />
+      </mesh>
+
+      {/* Brass glazing bars. The grid is what gives the wall its scale — without it the
+          opening reads as a hole rather than as a window. */}
+      {[-2.3, 0, 2.3].map((x) => (
+        <mesh key={'v' + x} position={[x, cy, GLASS_Z + 0.03]}>
+          <boxGeometry args={[0.09, h, 0.09]} />
+          <meshStandardMaterial {...BRASS_MAT} />
+        </mesh>
+      ))}
+      {[1.5, 2.9].map((y) => (
+        <mesh key={'h' + y} position={[0, y, GLASS_Z + 0.03]}>
+          <boxGeometry args={[w, 0.08, 0.09]} />
+          <meshStandardMaterial {...BRASS_MAT} />
+        </mesh>
+      ))}
+      {/* Frame */}
+      <mesh position={[0, GLASS_TOP, GLASS_Z + 0.04]}>
+        <boxGeometry args={[w + 0.3, 0.18, 0.16]} />
+        <meshStandardMaterial {...BRASS_MAT} />
+      </mesh>
+      <mesh position={[0, GLASS_BOT, GLASS_Z + 0.04]}>
+        <boxGeometry args={[w + 0.3, 0.18, 0.16]} />
+        <meshStandardMaterial {...BRASS_MAT} />
+      </mesh>
+      {([-1, 1] as const).map((side) => (
+        <mesh key={'f' + side} position={[side * GLASS_HALF, cy, GLASS_Z + 0.04]}>
+          <boxGeometry args={[0.18, h, 0.16]} />
+          <meshStandardMaterial {...BRASS_MAT} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function DrownedRoom() {
+  const wallH = WALL_H;
+  const wallY = wallH / 2 + FLOOR_Y;
+  return (
+    <group>
+      {/* Portholes down both sides — the single strongest "this is a hull" cue. */}
+      {([-1, 1] as const).map((side) =>
+        [-5.5, -1.5, 2.5].map((z) => <Porthole key={side + 'p' + z} side={side} z={z} />),
+      )}
+      <BulkheadHatch />
+      <GrandStairRail />
+      <PromenadeGlass />
+      <WreckWallDressing />
+      {/* Plate walls */}
+      <mesh position={[-7.2, wallY, -2]} rotation={[0, Math.PI / 2, 0]}>
+        <planeGeometry args={[18, wallH]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+      <mesh position={[7.2, wallY, -2]} rotation={[0, -Math.PI / 2, 0]}>
+        <planeGeometry args={[18, wallH]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+      {/* Back wall, built as a surround: the middle is cut out for the promenade glass.
+          A solid plate here is what kept the room reading as a basement. */}
+      <mesh position={[0, (GLASS_TOP + FLOOR_Y + wallH) / 2, -8.2]}>
+        <planeGeometry args={[16, FLOOR_Y + wallH - GLASS_TOP]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+      <mesh position={[0, (FLOOR_Y + GLASS_BOT) / 2, -8.2]}>
+        <planeGeometry args={[16, GLASS_BOT - FLOOR_Y]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+      {([-1, 1] as const).map((side) => (
+        <mesh key={'bw' + side} position={[side * (GLASS_HALF + (8 - GLASS_HALF) / 2), (GLASS_BOT + GLASS_TOP) / 2, -8.2]}>
+          <planeGeometry args={[16 - GLASS_HALF * 2, GLASS_TOP - GLASS_BOT]} />
+          <meshStandardMaterial {...STEEL_MAT} />
+        </mesh>
+      ))}
+      <mesh position={[0, wallY, 7.5]} rotation={[0, Math.PI, 0]}>
+        <planeGeometry args={[16, wallH]} />
+        <meshStandardMaterial {...STEEL_MAT} />
+      </mesh>
+
+      {/* Dado panelling — lacquered wood to waist height, the liner's one touch of luxury,
+          and now the part that has been sitting in salt water. */}
+      {([[-7.14, Math.PI / 2, 18], [7.14, -Math.PI / 2, 18]] as const).map(([x, ry, len]) => (
+        <group key={'d' + x}>
+          <mesh position={[x, (DADO_Y + FLOOR_Y) / 2, -2]} rotation={[0, ry, 0]}>
+            <planeGeometry args={[len, DADO_Y - FLOOR_Y]} />
+            <meshStandardMaterial {...PANEL_MAT} />
+          </mesh>
+          {/* Chair rail */}
+          <mesh position={[x - Math.sign(x) * 0.05, DADO_Y, -2]}>
+            <boxGeometry args={[0.1, 0.09, len]} />
+            <meshStandardMaterial {...BRASS_MAT} />
+          </mesh>
+        </group>
+      ))}
+      <mesh position={[0, (DADO_Y + FLOOR_Y) / 2, -8.14]}>
+        <planeGeometry args={[16, DADO_Y - FLOOR_Y]} />
+        <meshStandardMaterial {...PANEL_MAT} />
+      </mesh>
+      <mesh position={[0, DADO_Y, -8.09]}>
+        <boxGeometry args={[16, 0.09, 0.1]} />
+        <meshStandardMaterial {...BRASS_MAT} />
+      </mesh>
+
+      {/* Vertical plate seams — the frames the hull is built on, showing through. */}
+      {([-1, 1] as const).map((side) =>
+        [-7.5, -5, -2.5, 0, 2.5, 5].map((z) => (
+          <mesh key={side + 'v' + z} position={[side * 7.16, wallY + 0.6, z]}>
+            <boxGeometry args={[0.06, wallH - 2.2, 0.13]} />
+            <meshStandardMaterial color="#232b30" roughness={0.7} metalness={0.5} />
+          </mesh>
+        )),
+      )}
+
+      <Rivets />
+    </group>
+  );
+}
+
+/**
+ * Deck above, seen from below: close transverse frames, and at the centre the saloon's
+ * glass dome — cracked, with the sea standing on top of it.
+ */
+function DrownedCeiling() {
+  const y = WALL_H + FLOOR_Y;
+  return (
+    <group>
+      {/* The deckhead itself */}
+      <mesh position={[0, y, -0.5]} rotation={[Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[16, 17]} />
+        <meshStandardMaterial color="#141b1e" roughness={0.9} metalness={0.2} emissive="#080d10" emissiveIntensity={0.45} />
+      </mesh>
+
+      {/* Transverse frames. Ships are ribbed across the beam, not coffered — closely
+          spaced and shallow, which is what makes a deckhead feel low. */}
+      {Array.from({ length: 13 }, (_, i) => -8 + i * 1.35).map((z) => (
+        <mesh key={'rib' + z} position={[0, y - 0.14, z]}>
+          <boxGeometry args={[15.6, 0.2, 0.16]} />
+          <meshStandardMaterial color="#1e262a" roughness={0.75} metalness={0.4} emissive="#0a0f12" emissiveIntensity={0.4} />
+        </mesh>
+      ))}
+
+      {/* The dome. Dark green water standing on the glass, so the one opening overhead is
+          also the one place you can see how deep you are. */}
+      <mesh position={[0, y + 0.02, -0.9]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[2.5, 40]} />
+        <meshStandardMaterial color="#123038" roughness={0.25} metalness={0.3} emissive="#16414a" emissiveIntensity={0.9} transparent opacity={0.92} />
+      </mesh>
+      {/* Brass ring and radial glazing bars */}
+      <mesh position={[0, y - 0.03, -0.9]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[2.5, 0.08, 8, 56]} />
+        <meshStandardMaterial {...BRASS_MAT} />
+      </mesh>
+      {Array.from({ length: 10 }).map((_, i) => {
+        const a = (i / 10) * Math.PI;
+        return (
+          <mesh key={'bar' + i} position={[0, y - 0.04, -0.9]} rotation={[0, a, 0]}>
+            <boxGeometry args={[5, 0.05, 0.05]} />
+            <meshStandardMaterial {...BRASS_MAT} />
+          </mesh>
+        );
+      })}
+      {/* The crack: three jagged bars where the glass gave. */}
+      {[[0.5, 0.4], [-0.9, 1.1], [1.9, -0.5]].map(([rot, off], i) => (
+        <mesh key={'crack' + i} position={[off * 0.6, y - 0.06, -0.9 + off * 0.4]} rotation={[0, rot, 0]}>
+          <boxGeometry args={[3.4, 0.06, 0.035]} />
+          <meshStandardMaterial color="#0a1a1e" roughness={0.9} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/**
+ * A bulb that is still trying. Two or three of these are the only warm light left, and
+ * they stutter — the cold/warm contrast is the mood, not the blue on its own.
+ */
+function DyingLamp({ position, rotationY, seed, withLight }: {
+  position: [number, number, number]; rotationY: number; seed: number; withLight: boolean;
+}) {
+  const light = useRef<THREE.PointLight>(null);
+  const glow = useRef<THREE.MeshStandardMaterial>(null);
+  // The GLB is a cage on a base plate, authored standing on its base (mass sits at min-Y).
+  // Tipping it +90° about X lays that plate back against the wall; the Y turn then aims it
+  // into the room.
+  const cage = useProp('/models/ship_caglamp.glb', SHIP_TUNE.steel);
+
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime() + seed;
+    // Mains failing, not a candle: mostly on, with sharp irregular dropouts.
+    //
+    // Three sines multiplied — the product spends most of its time near zero and only
+    // occasionally swings wide, which is what gives the stutter its irregular spacing.
+    // Frequencies are mutually non-harmonic so the pattern never audibly repeats.
+    const n = Math.sin(t * 18.7) * Math.sin(t * 7.3) * Math.sin(t * 31.1);
+    // The threshold sets how OFTEN it drops, the floor sets how FAR. Dropping the
+    // threshold from -0.62 to -0.33 is what raises the rate: the product clears -0.33
+    // several times as often as it clears -0.62.
+    const on = n > -0.33 ? 1 : 0.4 + Math.abs(n) * 0.2;
+    // Never fully out: a lamp that blinks to black takes the whole room's warm light with
+    // it, and at this rate that would strobe.
+    const v = on * (0.82 + Math.sin(t * 3.7) * 0.18);
+    if (light.current) light.current.intensity = v * 3.4;
+    if (glow.current) glow.current.emissiveIntensity = v * 3.4;
+  });
+
+  return (
+    <group position={position}>
+      <primitive object={cage} rotation={[Math.PI / 2, rotationY, 0]} scale={0.34} />
+      {/* The filament, kept as our own sphere: the model's bulb is unlit geometry, and this
+          is what actually has to stutter. */}
+      <mesh>
+        <sphereGeometry args={[0.05, 10, 8]} />
+        <meshStandardMaterial ref={glow} color="#3a2a14" emissive="#ffb352" emissiveIntensity={2.6} toneMapped={false} />
+      </mesh>
+      {withLight && <pointLight ref={light} color="#ffa845" intensity={3.4} distance={7} decay={2} />}
+    </group>
+  );
+}
 function Room({ sconceLights, decoSconce }: { sconceLights: boolean; decoSconce: boolean }) {
   const wallH = WALL_H;
   const wallY = wallH / 2 + FLOOR_Y;
@@ -1897,7 +3045,6 @@ useGLTF.preload('/models/column.glb');
 //
 // Y is never typed in — it's derived from each model's own bbox floor, so the prop rests
 // exactly on the felt instead of hovering over it or sinking into it.
-const M = 1.85; // units per metre
 
 type PropDef = {
   url: string;
@@ -1910,6 +3057,18 @@ type PropDef = {
   tune: (m: THREE.MeshStandardMaterial) => void;
   /** Optional local-space point where smoke should be born. */
   smokeTip?: [number, number, number];
+  /**
+   * Two upright incense sticks, drawn procedurally rather than modelled.
+   *
+   * Meshy's censer shipped its sticks as a detached lump floating off in one corner
+   * (Y ∈ [0.46, 0.93], 342 verts at X[0.34,0.48] Z[0.36,0.46], with six empty slices
+   * between it and the bowl). That got cropped in scripts/fix-eastern-props.mjs. Two
+   * cylinders cost nothing, sit where they actually belong, and hand us an exact ember
+   * position for the smoke to rise from.
+   *
+   * `baseY` is model-space (the ash bed); `height` is in world units above it.
+   */
+  sticks?: { baseY: number; height: number };
 };
 
 // Prop sets, keyed by shop item. Each set reuses the same three anchor points on the
@@ -1995,23 +3154,68 @@ const COLLATERAL_PROPS: PropDef[] = [
   },
 ];
 
+// 东方局 — the same vices, different implements. Sizes and minY were measured off the
+// GLBs after scripts/fix-eastern-props.mjs corrected them; the three positions are the
+// collateral set's, reused deliberately (these are 16–22cm pieces, same class as the
+// 16–20cm effects that audit was run against, so the clearances carry over).
+const EASTERN_PROPS: PropDef[] = [
+  {
+    // Yixing teapot, cup and tray. 22cm is the TRAY — the pot alone is ~14cm, but the
+    // model's 1.906 span is the whole arrangement, so the tray is what sets the scale.
+    url: '/models/prop_teapot.glb',
+    scale: (0.22 * M) / 1.906,
+    minY: -0.566,
+    at: [-1.55, -0.86],
+    spin: 0.5,
+    tune: (m) => { m.roughness = 0.88; m.metalness = 0.05; }, // unglazed clay: matte, stony
+  },
+  {
+    // Coiled string of coins. Arrived standing upright like a signboard (Z was its
+    // thinnest axis at ±0.20 while Y ran ±0.95); laid flat offline, so its long axis is
+    // now Z at 1.906.
+    url: '/models/prop_coins.glb',
+    scale: (0.18 * M) / 1.906,
+    minY: -0.202,
+    at: [1.92, -0.85],
+    spin: -0.4,
+    tune: (m) => { m.roughness = 0.55; m.metalness = 0.7; }, // patinated bronze
+  },
+  {
+    // Bronze censer, 16cm across the loop handles. Squat after the crop (0.744 tall),
+    // which is right — it's a bowl, and the sticks are ours.
+    url: '/models/prop_incense.glb',
+    scale: (0.16 * M) / 1.906,
+    minY: -0.926,
+    at: [-1.14, -1.76],
+    spin: 0.3,
+    tune: (m) => { m.roughness = 0.5; m.metalness = 0.75; },
+    sticks: { baseY: -0.30, height: 0.26 }, // ash bed → ~14cm of stick above it
+  },
+];
+
 const PROP_SETS: Record<string, PropDef[]> = {
   'props.vice': VICE_PROPS,
   'props.collateral': COLLATERAL_PROPS,
+  'props.eastern': EASTERN_PROPS,
 };
 
-function TableProp({ url, scale, minY, at, spin, tune, smokeTip }: PropDef) {
+function TableProp({ url, scale, minY, at, spin, tune, smokeTip, sticks }: PropDef) {
   const model = useProp(url, tune);
   // The prop stands at (at.x, table_surface + how far minY dips below the origin, at.z),
   // spun by `spin` about Y. Compute the smoke source in world space so the smoke plume
   // itself lives at world scale — otherwise a 0.15-scale prop would shrink the plume
   // to the size of a match head.
   const c = Math.cos(spin), s = Math.sin(spin);
-  const tipWorld = smokeTip ? [
-    at[0] + scale * (c * smokeTip[0] + s * smokeTip[2]),
-    TABLE_SURFACE_Y + scale * (smokeTip[1] - minY),
-    at[1] + scale * (-s * smokeTip[0] + c * smokeTip[2]),
-  ] as [number, number, number] : null;
+  // The ash bed sits on the prop's own axis, so `spin` doesn't move it in XZ.
+  const ashY = sticks ? TABLE_SURFACE_Y + scale * (sticks.baseY - minY) : 0;
+  const tipWorld = sticks
+    // Smoke comes off the embers, which are ours and not in model space at all.
+    ? [at[0], ashY + sticks.height, at[1]] as [number, number, number]
+    : smokeTip ? [
+        at[0] + scale * (c * smokeTip[0] + s * smokeTip[2]),
+        TABLE_SURFACE_Y + scale * (smokeTip[1] - minY),
+        at[1] + scale * (-s * smokeTip[0] + c * smokeTip[2]),
+      ] as [number, number, number] : null;
   return (
     <>
       <primitive
@@ -2020,6 +3224,25 @@ function TableProp({ url, scale, minY, at, spin, tune, smokeTip }: PropDef) {
         scale={scale}
         rotation={[0, spin, 0]}
       />
+      {sticks && (
+        <group position={[at[0], ashY, at[1]]}>
+          {[-1, 1].map((side) => (
+            // Leaned apart a couple of degrees each way — two perfectly parallel sticks
+            // read as a machined object rather than something a hand pushed into ash.
+            <group key={side} position={[side * 0.017, 0, side * 0.011]} rotation={[side * 0.06, 0, side * -0.09]}>
+              <mesh position={[0, sticks.height / 2, 0]} castShadow>
+                <cylinderGeometry args={[0.0035, 0.0035, sticks.height, 5]} />
+                <meshStandardMaterial color="#4a3524" roughness={0.95} metalness={0} />
+              </mesh>
+              {/* The ember. toneMapped off so it stays a hot point in a very dark room. */}
+              <mesh position={[0, sticks.height, 0]}>
+                <sphereGeometry args={[0.0075, 8, 6]} />
+                <meshStandardMaterial color="#ff7a2a" emissive="#ff4400" emissiveIntensity={4} toneMapped={false} />
+              </mesh>
+            </group>
+          ))}
+        </group>
+      )}
       {tipWorld && <Smoke at={tipWorld} />}
     </>
   );
@@ -2211,6 +3434,19 @@ function Chair({ url }: { url: string }) {
 }
 useGLTF.preload('/models/chair.glb');
 useGLTF.preload('/models/throne_bone.glb');
+// The wreck's fittings. 1.2MB for all four, and the room is unusable without them.
+useGLTF.preload('/models/ship_porthole.glb');
+useGLTF.preload('/models/ship_hatch.glb');
+useGLTF.preload('/models/ship_chandelier_sunk.glb');
+useGLTF.preload('/models/ship_balustrade.glb');
+useGLTF.preload('/models/ship_caglamp.glb');
+useGLTF.preload('/models/ship_chair.glb');
+useGLTF.preload('/models/ship_service.glb');
+useGLTF.preload('/models/wreck_clock.glb');
+useGLTF.preload('/models/wreck_plaque.glb');
+useGLTF.preload('/models/wreck_lifering.glb');
+useGLTF.preload('/models/wreck_hat.glb');
+useGLTF.preload('/models/wreck_bottle.glb');
 
 const SEAT_MODEL: Record<string, string> = {
   'seat.throne': '/models/chair.glb',
@@ -2247,6 +3483,8 @@ interface SceneProps {
   finale: FinaleKind | null;
   viewMode: ViewMode;
   look: Loadout;
+  onMenuPick: ((id: MenuCardId) => void) | null;
+  menuTutorialDone: boolean;
 }
 
 function Scene({
@@ -2254,9 +3492,10 @@ function Scene({
   hand, selectedIndex, canSelect, onSelectCard,
   playerChips, opponentChips, pot, revealCeremony, playerGlow, opponentGlow, quality,
   playerSetsWon, opponentSetsWon, hintCard, showOpponent, opponentEyeColor, dealerAction, finale, viewMode,
-  look,
+  look, onMenuPick, menuTutorialDone,
 }: SceneProps) {
   const preset = QUALITY_PRESETS[quality];
+  const drowned = look.room === 'room.drowned';
   const spot = useRef<THREE.SpotLight>(null);
   const ambient = useRef<THREE.AmbientLight>(null);
   const hemi = useRef<THREE.HemisphereLight>(null);
@@ -2282,15 +3521,21 @@ function Scene({
 
   return (
     <FinaleContext.Provider value={finaleRef}>
+      {/* Provided in here, not around the Canvas: R3F runs its own React root, so an outer
+          provider never reaches the cards. Same reason FinaleContext lives at this level. */}
+      <CardBackContext.Provider value={(look.cardBack as CardBackId) ?? 'cardBack.house'}>
       {/* Stamps the shared clock origin — must sit before every finale consumer */}
       <FinaleDirector kind={finale} ctx={finaleRef} />
       {/* Midnight-blue base with warm gold accents — palette from the Dark Deco refs */}
       <color attach="background" args={['#070a16']} />
       <fog attach="fog" args={['#070a16', 5.5, 16]} />
-      <ambientLight ref={ambient} intensity={0.62} color="#4a3a22" />
+      {/* The wreck swaps the room's warmth for water-filtered green. The dying bulbs above
+          supply what little warm light is left, and that contrast is the whole mood — a
+          uniformly blue room would just read as a colour filter. */}
+      <ambientLight ref={ambient} intensity={drowned ? 0.5 : 0.62} color={drowned ? '#1d4a52' : '#4a3a22'} />
       <CeremonyLights active={revealCeremony} spotRef={spot} ambientRef={ambient} />
       <FinaleLights spotRef={spot} ambientRef={ambient} hemiRef={hemi} />
-      <hemisphereLight ref={hemi} args={['#3a4570', '#140a10', 0.55]} />
+      <hemisphereLight ref={hemi} args={drowned ? ['#2c6a74', '#050f12', 0.7] : ['#3a4570', '#140a10', 0.55]} />
       <spotLight
         ref={spot}
         position={SPOT_POS}
@@ -2319,29 +3564,83 @@ function Scene({
       </Environment>
 
       <DustMotes count={preset.dust} />
-      <Room sconceLights={quality !== 'low'} decoSconce={look.room === 'room.deco'} />
-      <Ceiling />
-      {/* Light cones: one under the chandelier, one broad wash over the table */}
-      {/* Hangs off the chandelier, so its top tracks CHANDELIER_Y down to the table */}
-      <VolumetricBeam position={[0, (CHANDELIER_Y + TABLE_SURFACE_Y) / 2, -0.9]} radiusTop={0.9} radiusBottom={2.1} height={CHANDELIER_Y - TABLE_SURFACE_Y} color="#f0d8a0" opacity={0.05} />
-      <VolumetricBeam position={[0, 1.9, -0.3]} radiusTop={1.1} radiusBottom={2.7} height={3.6} color="#e8d0a0" opacity={0.03} />
-      {/* Cosmetics. Each slot picks its cast; the shabby defaults are procedural so a new
-          account still gets a coherent room without any of the bought art. */}
-      {look.room === 'room.deco' && (
+
+      {/* The shell. Tilted as one piece for the wreck — the table, the cards and the
+          waterline all stay level, and that mismatch is the entire effect. Everything the
+          player interacts with keeps its original coordinates, so none of the placement
+          maths downstream has to know this room exists. */}
+      <group rotation={drowned ? [0, 0, WRECK_TILT] : [0, 0, 0]}>
+        {drowned ? <DrownedRoom /> : <Room sconceLights={quality !== 'low'} decoSconce={look.room === 'room.deco'} />}
+        {drowned ? <DrownedCeiling /> : <Ceiling />}
+        {drowned && (
+          <>
+            {/* The last three bulbs. Only the near pair carry real lights — a flickering
+                point light is cheap, but six of them is a shader recompile away. */}
+            <DyingLamp position={[-6.75, 3.3, -1.5]} rotationY={Math.PI / 2} seed={0} withLight />
+            <DyingLamp position={[6.75, 3.3, 0.5]} rotationY={-Math.PI / 2} seed={2.7} withLight />
+            <DyingLamp position={[-6.75, 3.3, -5.5]} rotationY={Math.PI / 2} seed={5.1} withLight={false} />
+          </>
+        )}
+        {/* Cosmetics. Each slot picks its cast; the shabby defaults are procedural so a new
+            account still gets a coherent room without any of the bought art. */}
+        {look.room === 'room.deco' && (
+          <>
+            <CeilingRose />
+            <DistantColumns />
+            <Drapes />
+            <RoyalBanner x={-1.95} />
+            <RoyalBanner x={1.95} />
+          </>
+        )}
+        {/* The salon's round columns and its balcony rail belong to that room, not
+            this one — a liner's saloon has frames and stanchions, not free-standing
+            classical columns. */}
+        {!drowned && <Railing />}
+        {/* Two reflectors would mean rendering the whole scene three times a frame, and
+            the floor is under the water here anyway — nobody can see it. */}
+        <Floor reflective={preset.reflectiveFloor && !drowned} />
+        <Carpet />
+      </group>
+
+      {drowned && (
         <>
-          <CeilingRose />
-          <DistantColumns />
-          <Drapes />
-          <RoyalBanner x={-1.95} />
-          <RoyalBanner x={1.95} />
+          <FloodWater reflective={preset.reflectiveFloor} />
+          <SunkenChandelier />
+          <Adrift />
+          <DriftingCards />
+          <Flotsam />
+          {quality !== 'low' && <Caustics />}
+          {/* Bounce off the surface — a cold uplight nothing else in the room provides. */}
+          <pointLight position={[0, WATER_Y + 0.3, -1]} color="#2e6f78" intensity={2.2} distance={9} decay={2} />
         </>
       )}
-      <Railing />
+
+      {drowned ? (
+        <>
+          {/* Daylight falling through the broken dome and the water above it. This is the
+              room's key light, and it comes from the sea rather than from any fixture —
+              which is why the fitting overhead can be dead and the table still lit. */}
+          <VolumetricBeam
+            position={[0, (WALL_H + FLOOR_Y + TABLE_SURFACE_Y) / 2, -0.9]}
+            radiusTop={2.4}
+            radiusBottom={3.4}
+            height={WALL_H + FLOOR_Y - TABLE_SURFACE_Y}
+            color="#7fd8dc"
+            opacity={0.055}
+          />
+          <VolumetricBeam position={[0, 2.2, -0.9]} radiusTop={1.6} radiusBottom={3.0} height={4.2} color="#5fc0c8" opacity={0.035} />
+        </>
+      ) : (
+        <>
+          {/* Light cones: one under the chandelier, one broad wash over the table */}
+          {/* Hangs off the chandelier, so its top tracks CHANDELIER_Y down to the table */}
+          <VolumetricBeam position={[0, (CHANDELIER_Y + TABLE_SURFACE_Y) / 2, -0.9]} radiusTop={0.9} radiusBottom={2.1} height={CHANDELIER_Y - TABLE_SURFACE_Y} color="#f0d8a0" opacity={0.05} />
+          <VolumetricBeam position={[0, 1.9, -0.3]} radiusTop={1.1} radiusBottom={2.7} height={3.6} color="#e8d0a0" opacity={0.03} />
+        </>
+      )}
       {LIGHT_MODEL[look.light]
         ? <Chandelier url={LIGHT_MODEL[look.light].url} accent={LIGHT_MODEL[look.light].accent} />
         : <BareBulb />}
-      <Floor reflective={preset.reflectiveFloor} />
-      <Carpet />
 
       {/* The pile drivers. Each set lost advances a needle one notch toward an ear;
           both transforms come out of aimDrill, so neither can drift off target. */}
@@ -2390,6 +3689,14 @@ function Scene({
             <pointLight position={[0, 0.15, -0.35]} intensity={1.1} distance={2} decay={2} color="#e8d8b0" />
           </>
         )}
+        {/* The hub menu rides the same rig as a real hand, so it sits in front of the
+            viewer at whatever angle the lobby camera is at. */}
+        {onMenuPick && (
+          <>
+            <MenuFan tutorialDone={menuTutorialDone} onPick={onMenuPick} />
+            <pointLight position={[0, 0.1, -0.4]} intensity={1.3} distance={2.2} decay={2} color="#e8d8b0" />
+          </>
+        )}
       </FirstPersonRig>
 
       {opponentCard && (
@@ -2431,6 +3738,7 @@ function Scene({
           <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
         </EffectComposer>
       )}
+      </CardBackContext.Provider>
     </FinaleContext.Provider>
   );
 }
@@ -2468,6 +3776,10 @@ interface TableSceneProps {
   viewMode?: ViewMode;
   /** Equipped cosmetics. Partial is fine — missing slots fall back to the free defaults. */
   look?: Partial<Loadout>;
+  /** Non-null deals the hub's menu hand. The hub has no button dock; this is it. */
+  onMenuPick?: ((id: MenuCardId) => void) | null;
+  /** Drives which menu card is lit. Ignored unless `onMenuPick` is set. */
+  menuTutorialDone?: boolean;
 }
 
 const noop = () => {};
@@ -2540,13 +3852,36 @@ export default function TableScene({
   finale = null,
   viewMode = 'seated',
   look,
+  onMenuPick = null,
+  menuTutorialDone = true,
 }: TableSceneProps) {
   const preset = QUALITY_PRESETS[quality];
+
+  // Probed on the client after mount, never during render: the server has no DOM, and
+  // guessing on the server then correcting on the client would be a hydration mismatch.
+  const [webgl, setWebgl] = useState<boolean | null>(null);
+  useEffect(() => { setWebgl(hasWebGL()); }, []);
+
+  // The GPU can take the drawing buffer away at any time — a driver reset, or a phone
+  // backgrounded long enough for the OS to reclaim it. Default behaviour is a permanently
+  // black canvas with nothing said; preventDefault at least keeps restoration possible,
+  // and either way the player gets told instead of staring at a void.
+  const [contextLost, setContextLost] = useState(false);
+  const onCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
+    const el = gl.domElement;
+    el.addEventListener('webglcontextlost', (e) => { e.preventDefault(); setContextLost(true); });
+    el.addEventListener('webglcontextrestored', () => setContextLost(false));
+  }, []);
+
+  if (webgl === false) return <div className="absolute inset-0"><SceneFallback reason="unsupported" /></div>;
+
   return (
     // Pointer events stay ON — the 3D hand fan is clickable. Overlaid UI sits above (z-10+)
     // and still receives its own clicks first.
     <div className="absolute inset-0">
+      <SceneBoundary>
       <Canvas
+        onCreated={onCreated}
         // Remount when quality changes — gl options (AA, tone mapping) are creation-time only.
         key={quality}
         shadows={preset.shadows}
@@ -2585,9 +3920,13 @@ export default function TableScene({
           finale={finale}
           viewMode={viewMode}
           look={normalizeLoadout(look)}
+          onMenuPick={onMenuPick ?? null}
+          menuTutorialDone={menuTutorialDone}
         />
         </Suspense>
       </Canvas>
+      </SceneBoundary>
+      {contextLost && <SceneFallback reason="lost" />}
       <LoadingVeil />
     </div>
   );

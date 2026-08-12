@@ -14,6 +14,21 @@ type Board = (typeof BOARDS)[number];
 const TOP_N = 50;
 const WINRATE_MIN_ROUNDS = 10;
 
+/**
+ * How long a computed board may be served from memory.
+ *
+ * The four aggregate boards each run a groupBy across the whole CardPlayEvent table on
+ * every request — fine at a few hundred rows, a full scan per page view once the table is
+ * real. Nobody is watching a leaderboard for second-by-second movement, so a minute of
+ * staleness buys back almost all of that cost.
+ *
+ * Same caveat as the rate limiter: this cache lives in one process. A second replica keeps
+ * its own copy, which for a leaderboard means two viewers might see boards a minute apart.
+ * Acceptable here in a way it would not be for anything transactional.
+ */
+const CACHE_MS = 60_000;
+const cache = new Map<Board, { at: number; entries: Entry[] }>();
+
 interface Entry {
   userId: string;
   value: number;
@@ -29,14 +44,45 @@ export async function GET(req: Request) {
   const session = await auth();
   const meId = session?.user?.id ?? null;
 
-  let entries: Entry[] = [];
-
+  // The chips board never needs the full ordering: the page is a LIMIT and the viewer's
+  // rank is "how many people are above me", which is one indexed count. Loading every user
+  // into memory to slice fifty off the top was the old shape, and it got linearly worse
+  // with every account created.
   if (board === 'chips') {
-    const users = await prisma.user.findMany({
-      orderBy: { chips: 'desc' },
-      select: { id: true, chips: true },
+    const [top, meRow] = await Promise.all([
+      prisma.user.findMany({
+        orderBy: [{ chips: 'desc' }, { id: 'asc' }],
+        take: TOP_N,
+        select: { id: true, chips: true, displayName: true },
+      }),
+      meId ? prisma.user.findUnique({ where: { id: meId }, select: { chips: true } }) : null,
+    ]);
+    // Must reproduce the LIST POSITION, not a competition rank. The ordering is
+    // [chips desc, id asc], so the people ahead of you are everyone richer PLUS everyone
+    // tied with you whose id sorts first. Counting only the richer gives tied players a
+    // shared rank — mathematically defensible, but it reads as a bug when the board shows
+    // you third and the line underneath says you are second.
+    const above = meRow && meId
+      ? (await prisma.user.count({ where: { chips: { gt: meRow.chips } } })) +
+        (await prisma.user.count({ where: { chips: meRow.chips, id: { lt: meId } } }))
+      : 0;
+    return NextResponse.json({
+      board,
+      rows: top.map((u, i) => ({
+        rank: i + 1,
+        name: u.displayName,
+        value: u.chips,
+        sub: null,
+        isMe: u.id === meId,
+      })),
+      me: meRow ? { rank: above + 1, value: meRow.chips, sub: null } : null,
     });
-    entries = users.map((u) => ({ userId: u.id, value: u.chips }));
+  }
+
+  let entries: Entry[] = [];
+  const cached = cache.get(board);
+  if (cached && Date.now() - cached.at < CACHE_MS) {
+    entries = cached.entries;
   } else if (board === 'winrate') {
     const [totals, wins] = await Promise.all([
       prisma.cardPlayEvent.groupBy({ by: ['userId'], _count: { _all: true } }),
@@ -61,6 +107,9 @@ export async function GET(req: Request) {
     entries = grouped.map((g) => ({ userId: g.userId, value: g._count._all }));
     entries.sort((a, b) => b.value - a.value);
   }
+  // Cached AFTER sorting, and without the viewer folded in — `entries` is the same for
+  // everyone, and only the name resolution below is per-request.
+  if (!cached || Date.now() - cached.at >= CACHE_MS) cache.set(board, { at: Date.now(), entries });
 
   // Resolve display names for the visible slice (+ the viewer, wherever they rank).
   const top = entries.slice(0, TOP_N);
